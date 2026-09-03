@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/*
+  Token world: a mission-console readout, not a chat-app gradient.
+  One accent (signal-cyan) used only where something is actually active.
+  Amber/red/green are reserved strictly for approval / error / done —
+  never decorative. Depth is borders-only, whisper-quiet surface shifts,
+  no glow, no shadow bloom (matches the dense/restrained direction).
+*/
+@theme {
+  --color-varma-bg: #08090d;
+  --color-varma-surface: #0e1015;
+  --color-varma-raised: #131620;
+  --color-varma-border: rgba(255, 255, 255, 0.08);
+  --color-varma-border-strong: rgba(255, 255, 255, 0.14);
+
+  --color-varma-signal: #38e0f5;
+  --color-varma-signal-dim: #1c8aa0;
+  --color-varma-redact: #f0524c;
+  --color-varma-verified: #34d399;
+  --color-varma-caution: #f2b035;
+
+  --color-varma-text: #e7ecf3;
+  --color-varma-text-dim: #7c8aa0;
+  --color-varma-text-faint: #4b5568;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-tech {
+  font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-varma-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-varma-border-strong);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Status-dot pulse (header shield indicator) */
+@keyframes varma-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-varma-pulse {
+  animation: varma-pulse 1.8s ease-in-out infinite;
+}
+
+/* Whole-panel "open" transition on mount */
+@keyframes varma-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-varma-panel-in {
+  animation: varma-panel-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Generic "rise in" used for messages, steps, chips, list rows */
+@keyframes varma-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-varma-rise {
+  animation: varma-rise 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes varma-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-varma-fade {
+  animation: varma-fade 160ms ease-out both;
+}
+
+@keyframes varma-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-varma-slide-down {
+  animation: varma-slide-down 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Popovers — origin-aware, never from scale(0) */
+@keyframes varma-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-varma-pop {
+  animation: varma-pop 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: top right;
+}
+
+/* First-run notice — slides up from the bottom of the panel */
+@keyframes varma-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-varma-slide-up {
+  animation: varma-slide-up 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
