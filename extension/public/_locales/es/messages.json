@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "V.A.R.M.A"
+  },
+  "extensionDescription": {
+    "message": "Agente de Anonimización Visual y Mapeo Redactado — un agente de navegador que preserva la privacidad. Los campos sensibles se redactan en el dispositivo antes de enviarse."
+  }
+}

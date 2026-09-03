@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "V.A.R.M.A"
+  },
+  "extensionDescription": {
+    "message": "Agent d'anonymisation visuelle et de cartographie expurgée — un agent de navigateur respectueux de la vie privée. Les champs sensibles sont expurgés sur l'appareil avant tout envoi."
+  }
+}
