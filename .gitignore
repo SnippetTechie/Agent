@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.vite/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+server/.env
+
+# Env
+.env
+.env.local
+
+# Local scratch
+.sih26171-backup/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
