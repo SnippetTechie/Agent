@@ -1,19 +1,23 @@
 /**
- * Captures the active tab's visible viewport with chrome.tabs.captureVisibleTab
- * and POSTs the PNG to the local receiver server (http://127.0.0.1:8000/screenshot).
+ * Full-page scrolling screenshot engine.
  *
- * This saves screenshots directly into the project's screenshots/ directory
- * with zero browser popups and zero settings changes required from users.
+ * Captures the entire active tab from top to bottom (similar to native mobile/desktop
+ * scrolling screenshots), stitches the slices on an in-memory canvas, hides duplicate
+ * sticky headers on lower slices, restores the user's scroll position, and POSTs the
+ * full image to the local receiver (http://127.0.0.1:8000/screenshot).
  *
- * Falls back gracefully when run outside an extension context or when the receiver
- * server is temporarily offline.
+ * Falls back gracefully to single-viewport capture when running on restricted browser
+ * pages (e.g. chrome://) or outside an extension context.
  */
 
 const RECEIVER_URL = "http://127.0.0.1:8000/screenshot";
+const MAX_TOTAL_HEIGHT = 16000; // max canvas height in CSS px
+const MAX_SCROLL_SLICES = 12;   // safety cap against infinite-scroll pages
+const SLICE_PAINT_DELAY_MS = 120;
 
 export interface CaptureResult {
   ok: boolean;
-  /** The captured viewport as a data URL ("" when capture failed). */
+  /** The captured image as a data URL ("" when capture failed). */
   dataUrl: string;
   /** Human-readable reason when ok is false. */
   error?: string;
@@ -21,6 +25,19 @@ export interface CaptureResult {
   savedPath?: string;
   /** Number of bytes saved. */
   bytes?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load captured image slice"));
+    img.src = dataUrl;
+  });
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -35,23 +52,9 @@ function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 /**
- * Capture the visible tab in the current window.
+ * Capture visible tab viewport via chrome.tabs API.
  */
-async function captureVisibleTab(): Promise<string> {
-  if (typeof chrome === "undefined" || !chrome.tabs?.captureVisibleTab) {
-    throw new Error("captureVisibleTab is unavailable outside extension context");
-  }
-
-  let windowId: number | undefined;
-  try {
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTab?.windowId !== undefined) {
-      windowId = activeTab.windowId;
-    }
-  } catch {
-    // Ignore and fallback to current window
-  }
-
+function captureVisibleTab(windowId?: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const cb = (dataUrl?: string) => {
       if (chrome.runtime.lastError) {
@@ -71,8 +74,248 @@ async function captureVisibleTab(): Promise<string> {
   });
 }
 
+interface PageMetrics {
+  totalHeight: number;
+  totalWidth: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  originalX: number;
+  originalY: number;
+}
+
 /**
- * Capture the active tab and send the screenshot directly to the local receiver.
+ * Injected script: queries the document's total scroll dimensions and original position.
+ */
+function queryPageMetrics(): PageMetrics {
+  const doc = document.documentElement;
+  const body = document.body;
+  const scrollEl = document.scrollingElement || doc || body;
+
+  const originalX = window.scrollX ?? window.pageXOffset ?? doc?.scrollLeft ?? body?.scrollLeft ?? scrollEl?.scrollLeft ?? 0;
+  const originalY = window.scrollY ?? window.pageYOffset ?? doc?.scrollTop ?? body?.scrollTop ?? scrollEl?.scrollTop ?? 0;
+
+  return {
+    totalHeight: Math.max(
+      doc?.scrollHeight || 0,
+      body?.scrollHeight || 0,
+      doc?.offsetHeight || 0,
+      body?.offsetHeight || 0,
+      doc?.clientHeight || 0,
+      scrollEl?.scrollHeight || 0
+    ),
+    totalWidth: Math.max(
+      doc?.scrollWidth || 0,
+      body?.scrollWidth || 0,
+      doc?.offsetWidth || 0,
+      body?.offsetWidth || 0,
+      doc?.clientWidth || 0,
+      scrollEl?.scrollWidth || 0
+    ),
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    originalX,
+    originalY,
+  };
+}
+
+/**
+ * Injected script: scrolls the page to a specified Y coordinate using all scroll APIs.
+ */
+function scrollPage(y: number): void {
+  window.scrollTo({ left: 0, top: y, behavior: "instant" as ScrollBehavior });
+  window.scrollTo(0, y);
+  if (document.documentElement) document.documentElement.scrollTop = y;
+  if (document.body) document.body.scrollTop = y;
+  if (document.scrollingElement) document.scrollingElement.scrollTop = y;
+}
+
+/**
+ * Injected script: temporarily hides sticky and fixed elements on lower slices
+ * so headers are not repeatedly pasted down the entire stitched image.
+ */
+function hideStickyElements(): void {
+  const elements = document.querySelectorAll("*");
+  for (const el of elements) {
+    if (el instanceof HTMLElement) {
+      const style = window.getComputedStyle(el);
+      if (style.position === "fixed" || style.position === "sticky") {
+        if (!el.hasAttribute("data-varma-orig-vis")) {
+          el.setAttribute("data-varma-orig-vis", el.style.visibility || "visible");
+        }
+        el.style.visibility = "hidden";
+      }
+    }
+  }
+}
+
+/**
+ * Injected script: safely restores sticky elements and returns to the exact original scroll position.
+ */
+function restorePage(origX: number, origY: number): void {
+  // 1. Restore sticky elements
+  try {
+    const elements = document.querySelectorAll("[data-varma-orig-vis]");
+    for (const el of elements) {
+      if (el instanceof HTMLElement) {
+        const orig = el.getAttribute("data-varma-orig-vis");
+        el.style.visibility = orig === "visible" || !orig ? "" : orig;
+        el.removeAttribute("data-varma-orig-vis");
+      }
+    }
+  } catch (err) {
+    // Ignore sticky restore issues
+  }
+
+  // 2. Restore exact scroll position across all scroll containers
+  try {
+    window.scrollTo({ left: origX, top: origY, behavior: "instant" as ScrollBehavior });
+    window.scrollTo(origX, origY);
+    if (document.documentElement) {
+      document.documentElement.scrollLeft = origX;
+      document.documentElement.scrollTop = origY;
+    }
+    if (document.body) {
+      document.body.scrollLeft = origX;
+      document.body.scrollTop = origY;
+    }
+    if (document.scrollingElement) {
+      document.scrollingElement.scrollLeft = origX;
+      document.scrollingElement.scrollTop = origY;
+    }
+  } catch (err) {
+    // Ignore scroll restore issues
+  }
+}
+
+/**
+ * Captures full-page scrolling screenshot of the active tab.
+ */
+async function captureFullPageScreenshot(): Promise<string> {
+  if (typeof chrome === "undefined" || !chrome.tabs?.captureVisibleTab) {
+    throw new Error("captureVisibleTab is unavailable outside extension context");
+  }
+
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.id) {
+    throw new Error("No active tab found");
+  }
+
+  const tabId = activeTab.id;
+  const windowId = activeTab.windowId;
+
+  // 1. Try to query dimensions via chrome.scripting
+  let metrics: PageMetrics | null = null;
+  if (chrome.scripting?.executeScript) {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: queryPageMetrics,
+      });
+      metrics = res?.result ?? null;
+    } catch {
+      // Scripting not supported on this page (e.g. chrome://) -> fallback to visible viewport
+    }
+  }
+
+  // If we can't inspect the DOM or the page fits in one screen, take a single viewport snapshot
+  if (!metrics || metrics.totalHeight <= metrics.viewportHeight + 25) {
+    return captureVisibleTab(windowId);
+  }
+
+  const { viewportHeight, originalX, originalY } = metrics;
+  const targetHeight = Math.min(
+    metrics.totalHeight,
+    viewportHeight * MAX_SCROLL_SLICES,
+    MAX_TOTAL_HEIGHT
+  );
+
+  try {
+    // 2. Scroll to top for slice 0
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: scrollPage,
+      args: [0],
+    });
+    await sleep(SLICE_PAINT_DELAY_MS);
+
+    const firstDataUrl = await captureVisibleTab(windowId);
+    const firstImg = await loadImage(firstDataUrl);
+
+    // Calculate pixel scale (for Retina / Windows display scaling, e.g. 1.25x / 1.5x)
+    const scale = firstImg.naturalHeight / viewportHeight;
+    const canvasWidth = firstImg.naturalWidth;
+    const canvasHeight = Math.round(targetHeight * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return firstDataUrl;
+    }
+
+    // Draw first slice
+    ctx.drawImage(firstImg, 0, 0);
+
+    // Hide sticky/fixed elements so they don't duplicate on subsequent scrolls
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: hideStickyElements,
+    });
+
+    // 3. Scroll down chunk by chunk
+    let currentY = viewportHeight;
+    while (currentY < targetHeight) {
+      const isLastSlice = currentY + viewportHeight >= targetHeight;
+      const scrollY = isLastSlice ? targetHeight - viewportHeight : currentY;
+
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: scrollPage,
+        args: [scrollY],
+      });
+      await sleep(SLICE_PAINT_DELAY_MS);
+
+      const sliceDataUrl = await captureVisibleTab(windowId);
+      const sliceImg = await loadImage(sliceDataUrl);
+
+      if (isLastSlice) {
+        // Draw only the bottom non-overlapping portion
+        const remainingHeight = targetHeight - currentY;
+        const sourceY = Math.round((viewportHeight - remainingHeight) * scale);
+        const sourceH = Math.round(remainingHeight * scale);
+        const destY = Math.round(currentY * scale);
+
+        ctx.drawImage(
+          sliceImg,
+          0, sourceY, sliceImg.naturalWidth, sourceH,
+          0, destY, sliceImg.naturalWidth, sourceH
+        );
+        break;
+      } else {
+        const destY = Math.round(currentY * scale);
+        ctx.drawImage(sliceImg, 0, destY);
+        currentY += viewportHeight;
+      }
+    }
+
+    return canvas.toDataURL("image/png");
+  } finally {
+    // 4. Always restore sticky elements and return to the exact original scroll position
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: restorePage,
+        args: [originalX, originalY],
+      });
+    } catch {
+      // Ignore restoration errors
+    }
+  }
+}
+
+/**
+ * Capture the full tab page and send the screenshot directly to the local receiver.
  * `prompt` is sanitized and used as the filename hint.
  */
 export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureResult> {
@@ -86,7 +329,7 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
 
   let dataUrl: string;
   try {
-    dataUrl = await captureVisibleTab();
+    dataUrl = await captureFullPageScreenshot();
   } catch (err) {
     return {
       ok: false,
