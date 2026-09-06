@@ -61,10 +61,16 @@ export interface ScreenshotInfo {
   analysisError?: string;
 }
 
+export type TurnMode = "chat" | "vision";
+export type ContextMode = "auto" | "page" | "chat";
+
 export interface AgentTurn {
   id: string;
   prompt: string;
   createdAt: number;
+  mode?: TurnMode;
+  /** Conversational text response from the assistant. */
+  response?: string;
   steps: AgentStep[];
   approval?: ApprovalRequest;
   status: TurnStatus;

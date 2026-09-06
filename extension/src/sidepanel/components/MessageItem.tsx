@@ -1,3 +1,4 @@
+import { Bot, LoaderCircle } from "lucide-react";
 import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
 import { ConfirmationBanner } from "./ConfirmationBanner.js";
@@ -22,6 +23,40 @@ export function MessageItem({
   onApprove: () => void;
   onDeny: () => void;
 }) {
+  const isChat = turn.mode === "chat";
+
+  if (isChat) {
+    const isRunning = turn.status === "running";
+    return (
+      <div className="animate-varma-rise space-y-2">
+        <div className="flex justify-end">
+          <div className="max-w-[85%] rounded-2xl rounded-br-sm border border-varma-signal/20 bg-varma-signal/[0.09] px-3.5 py-2 text-[13px] leading-relaxed text-varma-text">
+            {turn.prompt}
+          </div>
+        </div>
+
+        <div className="flex max-w-[92%] flex-col gap-2">
+          <div className="animate-varma-rise rounded-2xl rounded-tl-sm border border-varma-border/80 bg-varma-surface/90 px-4 py-3 text-[13px] leading-relaxed text-varma-text shadow-sm backdrop-blur-sm">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-varma-text-dim">
+              <Bot className="h-3.5 w-3.5 text-varma-signal" />
+              <span>V.A.R.M.A</span>
+            </div>
+            {isRunning ? (
+              <div className="flex items-center gap-2 text-[12.5px] text-varma-text-dim">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin text-varma-signal" />
+                <span>Thinking...</span>
+              </div>
+            ) : (
+              <div className="whitespace-pre-wrap font-sans text-varma-text/95">
+                {turn.response || turn.summary || "Done."}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const hasAnalysis = !!turn.analysis;
   const showSummary = !hasAnalysis && turn.summary && turn.status !== "running" && turn.status !== "awaiting-approval";
 

@@ -115,6 +115,81 @@ def query_uitars(image_bytes: bytes, user_prompt: str) -> dict:
         }
 
 
+def query_chat(messages: list, prompt: str) -> dict:
+    """Send conversational text messages to vLLM (UI-TARS or served text model)."""
+    clean_prompt = prompt.strip() if prompt else ""
+
+    system_prompt = (
+        "You are V.A.R.M.A (Visual Autonomous Redaction & Multimodal Agent), an intelligent AI companion built into the user's browser. "
+        "You can chat casually, answer general knowledge and programming questions, and assist the user. "
+        "When the user asks about what is on their active page or screen, inform them you can inspect the page with vision anytime they want. "
+        "Keep your conversational responses helpful, friendly, natural, and concise."
+    )
+
+    formatted_messages = [{"role": "system", "content": system_prompt}]
+
+    if messages and isinstance(messages, list):
+        for msg in messages:
+            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                formatted_messages.append({
+                    "role": msg["role"],
+                    "content": str(msg["content"]),
+                })
+    elif clean_prompt:
+        formatted_messages.append({"role": "user", "content": clean_prompt})
+
+    payload = {
+        "model": VLLM_MODEL,
+        "messages": formatted_messages,
+        "max_tokens": 1024,
+        "temperature": 0.7,
+    }
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{VLLM_BASE_URL}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    print(f"[receiver] Dispatching chat to {VLLM_BASE_URL}/chat/completions...", flush=True)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            choices = data.get("choices", [])
+            if choices:
+                text = choices[0].get("message", {}).get("content", "")
+                return {
+                    "success": True,
+                    "response": text,
+                    "model": VLLM_MODEL,
+                }
+            return {
+                "success": False,
+                "error": "No completion choice returned by vLLM",
+            }
+    except urllib.error.URLError as err:
+        msg = f"vLLM server unreachable at {VLLM_BASE_URL}. Error: {err}"
+        print(f"[receiver] {msg}", flush=True)
+        return {
+            "success": False,
+            "error": msg,
+            "offline": True,
+            "response": (
+                "Hello! I am V.A.R.M.A, your browser AI companion. "
+                "I am currently in local standby because the vLLM server/SSH tunnel is disconnected. "
+                "To connect my full reasoning and UI-TARS vision capabilities, start your SSH tunnel (`ssh -p 2222 -L 8000:localhost:8000 vispl@103.89.8.32`)."
+            ),
+        }
+    except Exception as err:
+        print(f"[receiver] Error calling vLLM chat: {err}", flush=True)
+        return {
+            "success": False,
+            "error": str(err),
+            "response": f"Encountered an error communicating with the model: {err}",
+        }
+
+
 class ScreenshotHandler(BaseHTTPRequestHandler):
     def _send_json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -122,7 +197,7 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(body)
@@ -130,7 +205,7 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
 
@@ -150,6 +225,25 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/chat":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except Exception:
+                data = {}
+            prompt = data.get("prompt", "")
+            messages = data.get("messages", [])
+            result = query_chat(messages, prompt)
+            self._send_json(200, {
+                "ok": result.get("success", False),
+                "response": result.get("response", ""),
+                "error": result.get("error"),
+                "offline": result.get("offline", False),
+                "model": result.get("model", VLLM_MODEL),
+            })
+            return
+
         if parsed.path != "/screenshot":
             self._send_json(404, {"ok": False, "error": "not found"})
             return

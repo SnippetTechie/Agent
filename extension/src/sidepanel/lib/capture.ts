@@ -10,10 +10,66 @@
  * pages (e.g. chrome://) or outside an extension context.
  */
 
-const RECEIVER_URL = "http://127.0.0.1:8002/screenshot";
+const RECEIVER_BASE = "http://127.0.0.1:8002";
+const RECEIVER_URL = `${RECEIVER_BASE}/screenshot`;
+const CHAT_URL = `${RECEIVER_BASE}/chat`;
 const MAX_TOTAL_HEIGHT = 16000; // max canvas height in CSS px
 const MAX_SCROLL_SLICES = 12;   // safety cap against infinite-scroll pages
 const SLICE_PAINT_DELAY_MS = 120;
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResponse {
+  ok: boolean;
+  response: string;
+  error?: string;
+  offline?: boolean;
+  model?: string;
+}
+
+/**
+ * Send conversational text message to local receiver without capturing any screenshot.
+ */
+export async function sendChatMessage(
+  prompt: string,
+  history: ChatMessage[] = [],
+  signal?: AbortSignal
+): Promise<ChatResponse> {
+  try {
+    const res = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ prompt, messages: history }),
+      signal,
+    });
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        response: `Local server returned error code ${res.status}.`,
+        error: `HTTP ${res.status}`,
+      };
+    }
+
+    const data = (await res.json()) as ChatResponse;
+    return data;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
+    return {
+      ok: false,
+      response: "Could not connect to local receiver. Ensure receiver is running (`python server/receiver.py`).",
+      error: err instanceof Error ? err.message : "Network error",
+      offline: true,
+    };
+  }
+}
 
 export interface CaptureResult {
   ok: boolean;

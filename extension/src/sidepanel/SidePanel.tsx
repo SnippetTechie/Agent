@@ -33,7 +33,7 @@ export function SidePanel() {
 
       <MessageFeed
         turns={turns}
-        onSelectSuggestion={submitPrompt}
+        onSelectSuggestion={(prompt, intent) => submitPrompt(prompt, "page", intent)}
         onApprove={approveCurrentTurn}
         onDeny={denyCurrentTurn}
       />

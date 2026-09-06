@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentTurn, ApprovalMode, AuditLogEntry, SuggestionIntent, TabContext } from "../types.js";
+import type { AgentTurn, ApprovalMode, AuditLogEntry, ContextMode, SuggestionIntent, TabContext } from "../types.js";
 import {
   buildApprovalRequest,
   buildInitialSteps,
@@ -10,7 +10,8 @@ import {
   tagLabel,
 } from "../lib/mockAgent.js";
 import { getActiveTabContext, watchActiveTabContext } from "../lib/activeTab.js";
-import { captureAndSaveScreenshot } from "../lib/capture.js";
+import { captureAndSaveScreenshot, sendChatMessage, type ChatMessage } from "../lib/capture.js";
+import { resolveTurnMode } from "../lib/intent.js";
 import { loadState, saveState, clearState } from "../lib/storage.js";
 import { soundEngine } from "../lib/sound.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
@@ -97,6 +98,46 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
     async (turn: AgentTurn, domain: string, isRisky: boolean, controller: AbortController) => {
       const { signal } = controller;
       try {
+        if (turn.mode === "chat") {
+          // Pure conversational flow: Zero screenshot capture, zero page scrolling!
+          const history: ChatMessage[] = [];
+          for (const prev of turns.slice(-6)) {
+            history.push({ role: "user", content: prev.prompt });
+            if (prev.response) {
+              history.push({ role: "assistant", content: prev.response });
+            } else if (prev.analysis) {
+              history.push({ role: "assistant", content: prev.analysis });
+            }
+          }
+          history.push({ role: "user", content: turn.prompt });
+
+          const chatResult = await sendChatMessage(turn.prompt, history, signal);
+          const answer =
+            chatResult.response ||
+            (chatResult.error ? `Error: ${chatResult.error}` : "I didn't receive a response.");
+
+          updateTurn(turn.id, (prevTurn) => ({
+            ...prevTurn,
+            status: chatResult.ok || chatResult.response ? "completed" : "error",
+            response: answer,
+            summary: answer,
+          }));
+
+          appendAudit([
+            {
+              id: nextId("audit"),
+              timestamp: Date.now(),
+              message: chatResult.ok
+                ? `Chat response processed via ${chatResult.model || "vLLM"}`
+                : `Chat response (local standby mode)`,
+              tag: "SESSION",
+            },
+          ]);
+
+          soundEngine.playComplete();
+          return;
+        }
+
         for (let i = 0; i < turn.steps.length; i++) {
           const step = turn.steps[i];
           if (!step) continue;
@@ -217,20 +258,23 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
         }
       }
     },
-    [updateTurn, updateStep, appendAudit, t, approvalMode]
+    [updateTurn, updateStep, appendAudit, t, approvalMode, turns]
   );
 
   const submitPrompt = useCallback(
-    (promptText: string, intent?: SuggestionIntent) => {
+    (promptText: string, contextMode: ContextMode = "auto", intent?: SuggestionIntent) => {
       const trimmed = promptText.trim();
       if (!trimmed) return;
 
       const domain = tabContext.domain ?? t("context.noActiveTab");
+      const mode = intent ? "vision" : resolveTurnMode(trimmed, contextMode);
+
       const turn: AgentTurn = {
         id: nextId("turn"),
         prompt: trimmed,
         createdAt: Date.now(),
-        steps: buildInitialSteps(t, domain, trimmed, intent),
+        mode,
+        steps: mode === "vision" ? buildInitialSteps(t, domain, trimmed, intent) : [],
         status: "running",
       };
 
@@ -239,7 +283,7 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
 
       const controller = new AbortController();
       abortRef.current = controller;
-      const isRisky = intent || approvalMode === "skip" ? false : requiresApproval(trimmed);
+      const isRisky = mode === "vision" && !intent && approvalMode !== "skip" && requiresApproval(trimmed);
       void runTurn(turn, domain, isRisky, controller);
     },
     [tabContext.domain, runTurn, t, approvalMode]

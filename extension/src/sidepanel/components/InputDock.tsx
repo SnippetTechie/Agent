@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Globe, Mic, ShieldCheck, ShieldOff, Square } from "lucide-react";
-import type { ApprovalMode, TabContext } from "../types.js";
+import { ArrowUp, Camera, Globe, MessageSquare, Mic, ShieldCheck, ShieldOff, Sparkles, Square } from "lucide-react";
+import type { ApprovalMode, ContextMode, TabContext } from "../types.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import { isSpeechRecognitionSupported, startSpeechRecognition, type SpeechController } from "../lib/speech.js";
+import { isPageContextRequested } from "../lib/intent.js";
 import { ApprovalModeMenu } from "./ApprovalModeMenu.js";
 
 const MAX_TEXTAREA_HEIGHT = 132;
@@ -19,17 +20,20 @@ export function InputDock({
   isRunning: boolean;
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => void;
-  onSubmit: (prompt: string) => void;
+  onSubmit: (prompt: string, contextMode: ContextMode) => void;
   onStop: () => void;
 }) {
   const { t, lang } = useI18n();
   const [value, setValue] = useState("");
+  const [contextMode, setContextMode] = useState<ContextMode>("auto");
   const [autoRedact, setAutoRedact] = useState(true);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const dictationBaseRef = useRef("");
   const micSupported = isSpeechRecognitionSupported();
+
+  const isVisionTargeted = contextMode === "page" || (contextMode === "auto" && isPageContextRequested(value));
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -44,10 +48,18 @@ export function InputDock({
     };
   }, []);
 
+  const cycleContextMode = () => {
+    setContextMode((prev) => {
+      if (prev === "auto") return "page";
+      if (prev === "page") return "chat";
+      return "auto";
+    });
+  };
+
   const submit = () => {
     if (!value.trim() || isRunning) return;
     speechRef.current?.stop();
-    onSubmit(value);
+    onSubmit(value, contextMode);
     setValue("");
   };
 
@@ -95,14 +107,54 @@ export function InputDock({
               submit();
             }
           }}
-          placeholder={t("input.placeholder")}
+          placeholder={
+            contextMode === "chat"
+              ? "Chat with V.A.R.M.A..."
+              : contextMode === "page"
+              ? "Ask anything about this page..."
+              : t("input.placeholder")
+          }
           disabled={isRunning}
           className="max-h-[132px] w-full resize-none bg-transparent text-[13px] leading-snug text-varma-text placeholder:text-varma-text-faint focus:outline-none disabled:opacity-50"
         />
 
         <div className="mt-2 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <ApprovalModeMenu mode={approvalMode} onChange={onApprovalModeChange} />
+
+            {/* Context Mode Toggle: Auto / Page / Chat */}
+            <button
+              type="button"
+              onClick={cycleContextMode}
+              title={`Context Mode: ${contextMode.toUpperCase()} (Click to toggle: Auto -> Page -> Chat)`}
+              className={`flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium transition-all active:scale-95 ${
+                contextMode === "page"
+                  ? "border border-varma-signal/40 bg-varma-signal/15 text-varma-signal"
+                  : contextMode === "chat"
+                  ? "border border-varma-border bg-white/5 text-varma-text-dim"
+                  : isVisionTargeted
+                  ? "border border-varma-signal/30 bg-varma-signal/10 text-varma-signal"
+                  : "text-varma-text-faint hover:text-varma-text-dim"
+              }`}
+            >
+              {contextMode === "page" ? (
+                <>
+                  <Camera className="h-3 w-3 text-varma-signal" />
+                  <span className="hidden sm:inline">Page</span>
+                </>
+              ) : contextMode === "chat" ? (
+                <>
+                  <MessageSquare className="h-3 w-3" />
+                  <span className="hidden sm:inline">Chat</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className={`h-3 w-3 ${isVisionTargeted ? "text-varma-signal" : ""}`} />
+                  <span className="hidden sm:inline">{isVisionTargeted ? "Auto: Page" : "Auto"}</span>
+                </>
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => setAutoRedact((v) => !v)}
