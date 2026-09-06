@@ -10,6 +10,7 @@ import {
   tagLabel,
 } from "../lib/mockAgent.js";
 import { getActiveTabContext, watchActiveTabContext } from "../lib/activeTab.js";
+import { captureAndSaveScreenshot } from "../lib/capture.js";
 import { loadState, saveState, clearState } from "../lib/storage.js";
 import { soundEngine } from "../lib/sound.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
@@ -59,7 +60,14 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
 
   useEffect(() => {
     if (!hydrated || !persistEnabled) return;
-    void saveState<PersistedState>(STORAGE_KEY, { turns, auditLog });
+    // Strip the heavy screenshot dataUrl before persisting: a captured
+    // viewport is hundreds of KB–MB and would blow the session-storage
+    // quota. The upload badge (uploaded/savedPath/error) is kept so the
+    // status survives a panel reopen; the live image is session-only.
+    const slimTurns = turns.map((turn) =>
+      turn.screenshot ? { ...turn, screenshot: { ...turn.screenshot, dataUrl: "" } } : turn
+    );
+    void saveState<PersistedState>(STORAGE_KEY, { turns: slimTurns, auditLog });
   }, [turns, auditLog, hydrated, persistEnabled]);
 
   const updateTurn = useCallback((turnId: string, patch: Partial<AgentTurn> | ((t: AgentTurn) => AgentTurn)) => {
@@ -126,6 +134,34 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           }
 
           updateStep(turn.id, step.id, { status: "active" });
+
+          // The first step is the "capturing" step — here we do the real
+          // work: grab one screenshot of the active tab and save it to
+          // the screenshots folder via chrome.downloads.
+          if (i === 0) {
+            const result = await captureAndSaveScreenshot(turn.prompt);
+            // Attach the real screenshot + save status to the turn so the
+            // UI can show the captured image and a saved/failed badge.
+            updateTurn(turn.id, {
+              screenshot: {
+                dataUrl: result.dataUrl,
+                saved: result.ok,
+                savedPath: result.savedPath,
+                error: result.error,
+              },
+            });
+            appendAudit([
+              {
+                id: nextId("audit"),
+                timestamp: Date.now(),
+                message: result.ok
+                  ? `Screenshot saved to ${result.savedPath ?? "screenshots folder"}`
+                  : `Screenshot capture failed: ${result.error ?? "unknown"}`,
+                tag: "SESSION",
+              },
+            ]);
+          }
+
           await sleep(STEP_DELAY_MS[i % STEP_DELAY_MS.length] ?? 800, signal);
           updateStep(turn.id, step.id, { status: "done" });
           soundEngine.playStepDone();

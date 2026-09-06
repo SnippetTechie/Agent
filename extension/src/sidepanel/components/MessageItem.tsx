@@ -1,6 +1,7 @@
 import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
 import { ConfirmationBanner } from "./ConfirmationBanner.js";
+import { ScreenshotPreview } from "./ScreenshotPreview.js";
 
 const SUMMARY_TONE: Record<AgentTurn["status"], string> = {
   running: "",
@@ -32,6 +33,7 @@ export function MessageItem({
 
       <div className="flex max-w-[92%] flex-col gap-2">
         <ActionCard turn={turn} />
+        {turn.screenshot && <ScreenshotPreview screenshot={turn.screenshot} />}
         {turn.approval && <ConfirmationBanner approval={turn.approval} onApprove={onApprove} onDeny={onDeny} />}
         {showSummary && (
           <div

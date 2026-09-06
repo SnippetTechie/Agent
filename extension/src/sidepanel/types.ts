@@ -42,6 +42,21 @@ export type TurnStatus =
   | "stopped"
   | "error";
 
+/**
+ * The real screenshot captured for a turn (chrome.tabs.captureVisibleTab)
+ * and saved into the screenshots folder via chrome.downloads.
+ */
+export interface ScreenshotInfo {
+  /** The captured viewport as a data URL ("" when capture failed). */
+  dataUrl: string;
+  /** True when the PNG was successfully saved to the screenshots folder. */
+  saved: boolean;
+  /** Destination path where the PNG was saved (e.g. screenshots/<timestamp>-<name>.png). */
+  savedPath?: string;
+  /** Human-readable failure reason, when capture or saving failed. */
+  error?: string;
+}
+
 export interface AgentTurn {
   id: string;
   prompt: string;
@@ -50,6 +65,7 @@ export interface AgentTurn {
   approval?: ApprovalRequest;
   status: TurnStatus;
   summary?: string;
+  screenshot?: ScreenshotInfo;
 }
 
 export interface AuditLogEntry {
