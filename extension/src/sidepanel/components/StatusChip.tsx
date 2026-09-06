@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { BrainCircuit, CheckCircle2, Loader2, ShieldCheck, XCircle, Zap } from "lucide-react";
+import { BrainCircuit, CheckCircle2, Loader2, MinusCircle, ShieldCheck, XCircle, Zap } from "lucide-react";
 import type { StepCategory, StepStatus } from "../types.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import type { TranslationKey } from "../lib/i18n/I18nContext.js";
@@ -12,7 +12,7 @@ const CATEGORY_META: Record<StepCategory, { key: TranslationKey; Icon: typeof Sh
 };
 
 /**
- * Color communicates STATUS (neutral/active/done/error) — one accent used
+ * Color communicates STATUS (neutral/active/done/error/skipped) — one accent used
  * only where something is actually happening. Category is communicated by
  * icon + label alone, never by its own hue: four different-colored chips
  * for four pipeline phases dilutes focus for no informational gain.
@@ -21,6 +21,14 @@ export function StatusChip({ category, status }: { category: StepCategory; statu
   const { t } = useI18n();
   const meta = CATEGORY_META[category];
 
+  if (status === "skipped") {
+    return (
+      <Chip tone="text-varma-text-faint/60 border-varma-border/40 bg-white/[0.02] opacity-60">
+        <MinusCircle className="h-3 w-3" strokeWidth={2.5} />
+        Skipped
+      </Chip>
+    );
+  }
   if (status === "error") {
     return (
       <Chip tone="text-varma-redact border-varma-redact/30 bg-varma-redact/10">

@@ -109,10 +109,10 @@ export function buildInitialSteps(
     {
       id: nextId("step"),
       label: t("steps.redactionLabel"),
-      detail: maskedDetail,
+      detail: "Skipped (local redaction bypassed)",
       category: "sanitizing",
-      status: "pending",
-      preview: { maskedCount: boxes.length, boxes },
+      status: "skipped",
+      preview: { maskedCount: 0, boxes: [] },
     },
     {
       id: nextId("step"),
@@ -131,11 +131,16 @@ export function buildInitialSteps(
   ];
 }
 
-export function buildApprovalRequest(t: Translate, domain: string): ApprovalRequest {
+export function buildApprovalRequest(
+  t: Translate,
+  domain: string,
+  customActionLabel?: string,
+  customRiskNote?: string
+): ApprovalRequest {
   return {
     id: nextId("approval"),
-    actionLabel: t("approval.actionLabel", { domain }),
-    riskNote: t("approval.riskNote"),
+    actionLabel: customActionLabel || t("approval.actionLabel", { domain }),
+    riskNote: customRiskNote || t("approval.riskNote"),
     state: "pending",
   };
 }

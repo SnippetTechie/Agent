@@ -10,6 +10,8 @@
  * pages (e.g. chrome://) or outside an extension context.
  */
 
+import type { ScreenshotItem } from "../types.js";
+
 const RECEIVER_BASE = "http://127.0.0.1:8002";
 const RECEIVER_URL = `${RECEIVER_BASE}/screenshot`;
 const CHAT_URL = `${RECEIVER_BASE}/chat`;
@@ -79,6 +81,8 @@ export interface CaptureResult {
   error?: string;
   /** Path where the PNG was saved on the machine (e.g. screenshots/<timestamp>-<name>.png). */
   savedPath?: string;
+  /** Direct URL to load screenshot from receiver */
+  url?: string;
   /** Number of bytes saved. */
   bytes?: number;
   /** UI-TARS vision analysis/description of the screenshot. */
@@ -87,6 +91,17 @@ export interface CaptureResult {
   analysisError?: string;
   /** Status of the vLLM model connection. */
   vllmStatus?: "online" | "offline";
+  /** Mouse action extracted from UI-TARS reasoning. */
+  action?: {
+    type: "click" | "move";
+    x: number;
+    y: number;
+    target?: string;
+    normalized?: boolean;
+    textToType?: string;
+  };
+  /** Slices/viewports captured across scrolling */
+  items?: ScreenshotItem[];
 }
 
 function sleep(ms: number): Promise<void> {
@@ -249,21 +264,41 @@ function restorePage(origX: number, origY: number): void {
   }
 }
 
+export interface FullPageCaptureResult {
+  fullDataUrl: string;
+  slices: ScreenshotItem[];
+}
+
 /**
  * Captures full-page scrolling screenshot of the active tab.
+ * Collects each viewport slice along with the final stitched image.
  */
-async function captureFullPageScreenshot(): Promise<string> {
+async function captureFullPageScreenshot(): Promise<FullPageCaptureResult> {
   if (typeof chrome === "undefined" || !chrome.tabs?.captureVisibleTab) {
     throw new Error("captureVisibleTab is unavailable outside extension context");
   }
 
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // Resilient active tab discovery (works when sidepanel has focus)
+  let activeTab: chrome.tabs.Tab | undefined = undefined;
+  try {
+    const focusedTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (focusedTabs[0]?.id) {
+      activeTab = focusedTabs[0];
+    } else {
+      const anyActive = await chrome.tabs.query({ active: true });
+      if (anyActive[0]?.id) activeTab = anyActive[0];
+    }
+  } catch (err) {
+    console.warn("[capture] Error querying active tab:", err);
+  }
+
   if (!activeTab?.id) {
     throw new Error("No active tab found");
   }
 
   const tabId = activeTab.id;
   const windowId = activeTab.windowId;
+  const slices: ScreenshotItem[] = [];
 
   // 1. Try to query dimensions via chrome.scripting
   let metrics: PageMetrics | null = null;
@@ -281,7 +316,18 @@ async function captureFullPageScreenshot(): Promise<string> {
 
   // If we can't inspect the DOM or the page fits in one screen, take a single viewport snapshot
   if (!metrics || metrics.totalHeight <= metrics.viewportHeight + 25) {
-    return captureVisibleTab(windowId);
+    const singleDataUrl = await captureVisibleTab(windowId);
+    return {
+      fullDataUrl: singleDataUrl,
+      slices: [
+        {
+          id: "viewport-0",
+          dataUrl: singleDataUrl,
+          label: "Active Viewport",
+          scrollY: 0,
+        },
+      ],
+    };
   }
 
   const { viewportHeight, originalX, originalY } = metrics;
@@ -301,6 +347,13 @@ async function captureFullPageScreenshot(): Promise<string> {
     await sleep(SLICE_PAINT_DELAY_MS);
 
     const firstDataUrl = await captureVisibleTab(windowId);
+    slices.push({
+      id: "slice-0",
+      dataUrl: firstDataUrl,
+      label: "1. Top Viewport",
+      scrollY: 0,
+    });
+
     const firstImg = await loadImage(firstDataUrl);
 
     // Calculate pixel scale (for Retina / Windows display scaling, e.g. 1.25x / 1.5x)
@@ -313,7 +366,10 @@ async function captureFullPageScreenshot(): Promise<string> {
     canvas.height = canvasHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      return firstDataUrl;
+      return {
+        fullDataUrl: firstDataUrl,
+        slices,
+      };
     }
 
     // Draw first slice
@@ -327,6 +383,7 @@ async function captureFullPageScreenshot(): Promise<string> {
 
     // 3. Scroll down chunk by chunk
     let currentY = viewportHeight;
+    let sliceIndex = 1;
     while (currentY < targetHeight) {
       const isLastSlice = currentY + viewportHeight >= targetHeight;
       const scrollY = isLastSlice ? targetHeight - viewportHeight : currentY;
@@ -339,6 +396,14 @@ async function captureFullPageScreenshot(): Promise<string> {
       await sleep(SLICE_PAINT_DELAY_MS);
 
       const sliceDataUrl = await captureVisibleTab(windowId);
+      slices.push({
+        id: `slice-${sliceIndex}`,
+        dataUrl: sliceDataUrl,
+        label: `${sliceIndex + 1}. Viewport (${Math.round(scrollY)}px)`,
+        scrollY: Math.round(scrollY),
+      });
+      sliceIndex++;
+
       const sliceImg = await loadImage(sliceDataUrl);
 
       if (isLastSlice) {
@@ -361,7 +426,20 @@ async function captureFullPageScreenshot(): Promise<string> {
       }
     }
 
-    return canvas.toDataURL("image/png");
+    const fullDataUrl = canvas.toDataURL("image/png");
+
+    // Add stitched full image as the overview item in horizontal row
+    slices.push({
+      id: "slice-full",
+      dataUrl: fullDataUrl,
+      label: "Full Page Stitched",
+      scrollY: targetHeight,
+    });
+
+    return {
+      fullDataUrl,
+      slices,
+    };
   } finally {
     // 4. Always restore sticky elements and return to the exact original scroll position
     try {
@@ -389,9 +467,9 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
     };
   }
 
-  let dataUrl: string;
+  let captureRes: FullPageCaptureResult;
   try {
-    dataUrl = await captureFullPageScreenshot();
+    captureRes = await captureFullPageScreenshot();
   } catch (err) {
     return {
       ok: false,
@@ -400,13 +478,15 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
     };
   }
 
+  const { fullDataUrl, slices } = captureRes;
+
   const safeName = prompt
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
 
-  const blob = dataUrlToBlob(dataUrl);
+  const blob = dataUrlToBlob(fullDataUrl);
 
   try {
     const res = await fetch(`${RECEIVER_URL}?name=${encodeURIComponent(safeName)}`, {
@@ -421,7 +501,8 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
     if (!res.ok) {
       return {
         ok: false,
-        dataUrl,
+        dataUrl: fullDataUrl,
+        items: slices,
         error: `Receiver error (${res.status})`,
       };
     }
@@ -429,25 +510,38 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
     const json = (await res.json()) as {
       ok: boolean;
       path?: string;
+      url?: string;
       bytes?: number;
       analysis?: string;
       analysis_error?: string;
       vllm_status?: "online" | "offline";
+      action?: {
+        type: "click" | "move";
+        x: number;
+        y: number;
+        target?: string;
+        normalized?: boolean;
+        textToType?: string;
+      };
     };
 
     return {
       ok: true,
-      dataUrl,
+      dataUrl: fullDataUrl,
+      items: slices,
       savedPath: json.path,
+      url: json.url,
       bytes: json.bytes,
       analysis: json.analysis,
       analysisError: json.analysis_error,
       vllmStatus: json.vllm_status,
+      action: json.action,
     };
   } catch (err) {
     return {
       ok: false,
-      dataUrl,
+      dataUrl: fullDataUrl,
+      items: slices,
       error: "Local receiver offline (start with: python server/receiver.py)",
     };
   }

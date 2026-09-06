@@ -2,7 +2,6 @@ import { Bot, LoaderCircle } from "lucide-react";
 import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
 import { ConfirmationBanner } from "./ConfirmationBanner.js";
-import { ScreenshotPreview } from "./ScreenshotPreview.js";
 import { VlmAnalysisCard } from "./VlmAnalysisCard.js";
 
 const SUMMARY_TONE: Record<AgentTurn["status"], string> = {
@@ -69,8 +68,7 @@ export function MessageItem({
       </div>
 
       <div className="flex max-w-[92%] flex-col gap-2">
-        <ActionCard turn={turn} />
-        {turn.screenshot && <ScreenshotPreview screenshot={turn.screenshot} />}
+        <ActionCard turn={turn} screenshot={turn.screenshot} />
         {hasAnalysis && (
           <VlmAnalysisCard
             analysis={turn.analysis}

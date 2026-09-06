@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentTurn, ApprovalMode, AuditLogEntry, ContextMode, SuggestionIntent, TabContext } from "../types.js";
+import type { AgentTurn, ApprovalMode, AuditLogEntry, ContextMode, SuggestionIntent, TabContext, VarmaMouseAction } from "../types.js";
 import {
   buildApprovalRequest,
   buildInitialSteps,
@@ -12,6 +12,7 @@ import {
 import { getActiveTabContext, watchActiveTabContext } from "../lib/activeTab.js";
 import { captureAndSaveScreenshot, sendChatMessage, type ChatMessage } from "../lib/capture.js";
 import { resolveTurnMode } from "../lib/intent.js";
+import { animateVarmaMouse } from "../lib/varmaMouse.js";
 import { loadState, saveState, clearState } from "../lib/storage.js";
 import { soundEngine } from "../lib/sound.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
@@ -65,9 +66,23 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
     // viewport is hundreds of KB–MB and would blow the session-storage
     // quota. The upload badge (uploaded/savedPath/error) is kept so the
     // status survives a panel reopen; the live image is session-only.
-    const slimTurns = turns.map((turn) =>
-      turn.screenshot ? { ...turn, screenshot: { ...turn.screenshot, dataUrl: "" } } : turn
-    );
+    const slimTurns = turns.map((turn) => {
+      if (!turn.screenshot) return turn;
+      const slimItems = turn.screenshot.items?.map((item) => ({
+        ...item,
+        dataUrl: "",
+        url: item.url || (item.savedPath ? `http://127.0.0.1:8002/${item.savedPath}` : (turn.screenshot?.savedPath ? `http://127.0.0.1:8002/${turn.screenshot.savedPath}` : undefined)),
+      }));
+      return {
+        ...turn,
+        screenshot: {
+          ...turn.screenshot,
+          dataUrl: "",
+          url: turn.screenshot.url || (turn.screenshot.savedPath ? `http://127.0.0.1:8002/${turn.screenshot.savedPath}` : undefined),
+          items: slimItems,
+        },
+      };
+    });
     void saveState<PersistedState>(STORAGE_KEY, { turns: slimTurns, auditLog });
   }, [turns, auditLog, hydrated, persistEnabled]);
 
@@ -138,10 +153,101 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           return;
         }
 
+        let detectedAction: VarmaMouseAction | undefined = undefined;
+
         for (let i = 0; i < turn.steps.length; i++) {
           const step = turn.steps[i];
           if (!step) continue;
+
+          // Requirement: Skip local redaction step
+          if (step.status === "skipped" || step.label.toLowerCase().includes("redaction")) {
+            updateStep(turn.id, step.id, {
+              status: "skipped",
+              detail: "Skipped (local redaction bypassed)",
+            });
+            continue;
+          }
+
           const isLastStep = i === turn.steps.length - 1;
+
+          // Mouse Click Approval Gate: Prompt user to Agree / Decline before executing mouse clicks
+          if ((step.category === "executing" || isLastStep) && detectedAction) {
+            const targetDesc = detectedAction.target || "interactive element";
+            const actionDesc = detectedAction.textToType
+              ? `Click on "${targetDesc}" and type "${detectedAction.textToType}"`
+              : `Click on "${targetDesc}"`;
+
+            const approval = buildApprovalRequest(
+              t,
+              domain,
+              `V.A.R.M.A Action: ${actionDesc}`,
+              `V.A.R.M.A will animate its blue cursor across the page and execute the interaction.`
+            );
+            updateTurn(turn.id, { status: "awaiting-approval", approval });
+            soundEngine.playApprovalPrompt();
+
+            let approved: boolean;
+            if (approvalMode === "auto") {
+              await sleep(600, signal);
+              approved = true;
+            } else {
+              approved = await new Promise<boolean>((resolve) => {
+                approvalResolvers.current.set(turn.id, resolve);
+              });
+              approvalResolvers.current.delete(turn.id);
+            }
+
+            updateTurn(turn.id, (t2) =>
+              t2.approval ? { ...t2, approval: { ...t2.approval, state: approved ? "approved" : "denied" } } : t2
+            );
+
+            if (!approved) {
+              soundEngine.playDeny();
+              updateStep(turn.id, step.id, { status: "error", detail: "Click action declined by user" });
+              updateTurn(turn.id, { status: "denied", summary: "Mouse click was declined by user." });
+              return;
+            }
+
+            updateTurn(turn.id, { status: "running" });
+            updateStep(turn.id, step.id, {
+              status: "active",
+              detail: `V.A.R.M.A system moving blue mouse cursor to ${targetDesc}...`,
+            });
+
+            // Find the active tab across windows
+            let activeTabId: number | undefined = undefined;
+            try {
+              const focusedTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+              if (focusedTabs[0]?.id) {
+                activeTabId = focusedTabs[0].id;
+              } else {
+                const anyActive = await chrome.tabs.query({ active: true });
+                if (anyActive[0]?.id) activeTabId = anyActive[0].id;
+              }
+            } catch (err) {
+              console.warn("[varma] Error querying active tab:", err);
+            }
+
+            // Animate V.A.R.M.A blue cursor on active tab
+            if (activeTabId) {
+              try {
+                await animateVarmaMouse(activeTabId, detectedAction.x, detectedAction.y, {
+                  normalized: detectedAction.normalized,
+                  target: detectedAction.target,
+                  textToType: detectedAction.textToType,
+                });
+              } catch (err) {
+                console.warn("[varma-mouse] Error executing mouse animation:", err);
+              }
+            }
+
+            updateStep(turn.id, step.id, {
+              status: "done",
+              detail: `V.A.R.M.A clicked and interacted with "${targetDesc}"`,
+            });
+            soundEngine.playStepDone();
+            continue;
+          }
 
           if (isLastStep && isRisky) {
             const approval = buildApprovalRequest(t, domain);
@@ -181,17 +287,21 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           // the screenshots folder via chrome.downloads.
           if (i === 0) {
             const result = await captureAndSaveScreenshot(turn.prompt);
-            // Attach the real screenshot + save status + UI-TARS analysis to the turn.
+            detectedAction = result.action;
+            // Attach the real screenshot + save status + UI-TARS analysis + mouse action to the turn.
             updateTurn(turn.id, {
               screenshot: {
                 dataUrl: result.dataUrl,
+                items: result.items,
                 saved: result.ok,
                 savedPath: result.savedPath,
+                url: result.url,
                 error: result.error,
                 analysis: result.analysis,
                 analysisError: result.analysisError,
               },
               analysis: result.analysis,
+              mouseAction: result.action,
             });
             appendAudit([
               {

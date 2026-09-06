@@ -38,10 +38,21 @@ def query_uitars(image_bytes: bytes, user_prompt: str) -> dict:
     clean_prompt = user_prompt.strip() or "Describe this webpage screenshot in a clear and simplified way."
 
     system_prompt = (
-        "You are UI-TARS, a state-of-the-art vision-language agent specialized in GUI and webpage understanding. "
-        "Analyze the provided webpage screenshot and describe it in a simplified, easy-to-understand way. "
-        "Highlight the primary content, structure, key interactive elements, and directly answer the user's request. "
-        "Keep the explanation clear, structured, and helpful."
+        "You are UI-TARS, an advanced multimodal GUI agent capable of perceiving web pages and operating the browser.\n"
+        "You have direct visual perception of the user's active viewport.\n\n"
+        "Instructions:\n"
+        "1. DECIDE ACTION TYPE:\n"
+        "   - READ: If the user is asking a question, asking for a summary, looking for information (e.g. deadline, organization, problem description, or details), read the visible page contents and answer clearly.\n"
+        "   - USE MOUSE: If the user wants to search, click, navigate, select, or interact with an element on the screen (e.g. 'search for disaster management', 'click shortlist', 'proceed', 'open on sih.gov.in'), identify the visual target element on the screen and issue a mouse action.\n\n"
+        "2. FOR MOUSE ACTION:\n"
+        "   Always output in this structure:\n"
+        "   Thought: <explain what element you are clicking and why>\n"
+        "   Action: click(start_box='[ymin, xmin, ymax, xmax]')\n"
+        "   (Use 0-1000 normalized coordinates for the bounding box of the element to click).\n"
+        "   If the action is typing or searching, also output:\n"
+        "   Type: \"<text to type>\"\n\n"
+        "3. FOR READING / ANSWERING:\n"
+        "   Provide a clear, direct, and structured answer answering the user's question using the text, tables, and elements on the page."
     )
 
     payload = {
@@ -190,6 +201,127 @@ def query_chat(messages: list, prompt: str) -> dict:
         }
 
 
+import re
+
+
+def extract_mouse_action(text: str, user_prompt: str) -> dict | None:
+    """Parse UI-TARS output or prompt for mouse click actions, typing, and coordinates."""
+    if not text:
+        text = ""
+
+    # 1. Check for text to type: Type: "..." or type(text='...')
+    text_to_type = None
+    type_match = re.search(r'(?:Type:\s*|type\s*\(\s*(?:text\s*=\s*)?)[\"\']([^\"\']+)[\"\']', text, re.IGNORECASE)
+    if type_match:
+        text_to_type = type_match.group(1).strip()
+
+    # Check for search query in prompt if not specified by UI-TARS
+    if not text_to_type:
+        search_prompt_match = re.search(r"\bsearch\s+(?:for\s+)?(.+)", user_prompt, re.IGNORECASE)
+        if search_prompt_match:
+            text_to_type = search_prompt_match.group(1).strip()
+
+    # 2. Extract Thought explanation to get a clear, human-friendly target name
+    target_name = None
+    thought_match = re.search(r"Thought:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if thought_match:
+        thought_line = thought_match.group(1).strip()
+        target_sub = re.search(r"(?:click|interact with|tap|select)\s+(?:on\s+)?(?:the\s+)?([^,\.;]+)", thought_line, re.IGNORECASE)
+        if target_sub:
+            target_name = target_sub.group(1).strip()[:50]
+        else:
+            target_name = thought_line[:50]
+
+    # 3. Match 4-coordinate bounding box: click(start_box='[y1, x1, y2, x2]') or '(y1, x1, y2, x2)'
+    box_match = re.search(
+        r"click\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[\]\)]['\"]?",
+        text,
+        re.IGNORECASE,
+    )
+    if box_match:
+        y1, x1, y2, x2 = map(int, box_match.groups())
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        return {
+            "type": "click",
+            "x": cx,
+            "y": cy,
+            "normalized": True,
+            "target": target_name or "Target Element",
+            "textToType": text_to_type,
+        }
+
+    # 4. Match 2-coordinate point: click(start_box='(275,314)') or click(point='(x, y)') or click(x, y)
+    pt_match = re.search(
+        r"click\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)[\]\)]['\"]?",
+        text,
+        re.IGNORECASE,
+    )
+    if pt_match:
+        val1, val2 = map(int, pt_match.groups())
+        # In UI-TARS notation, start_box=(ymin, xmin) -> val1=y, val2=x
+        is_point_keyword = bool(re.search(r"point\s*=", text[:pt_match.start() + 20], re.IGNORECASE))
+        if is_point_keyword:
+            x, y = val1, val2
+        else:
+            x, y = val2, val1
+
+        return {
+            "type": "click",
+            "x": x,
+            "y": y,
+            "normalized": x <= 1000 and y <= 1000,
+            "target": target_name or "Target Element",
+            "textToType": text_to_type,
+        }
+
+    # 5. Check if action contains move_to or hover
+    move_match = re.search(
+        r"(?:move_to|hover)\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)[\]\)]['\"]?",
+        text,
+        re.IGNORECASE,
+    )
+    if move_match:
+        v1, v2 = map(int, move_match.groups())
+        return {
+            "type": "move",
+            "x": v2,
+            "y": v1,
+            "normalized": True,
+            "target": target_name or "Target Element",
+            "textToType": text_to_type,
+        }
+
+    # 6. Fallback based on user command if UI-TARS emitted an action or prompt is explicit
+    if re.search(r"\bsearch\b", user_prompt, re.IGNORECASE):
+        return {
+            "type": "click",
+            "target": "Search input",
+            "x": 580,
+            "y": 28,
+            "normalized": True,
+            "textToType": text_to_type,
+        }
+
+    click_intent = re.search(
+        r"\b(?:click|open|select|press|tap|choose|play|make\s+move|solve)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]{1,30})",
+        user_prompt,
+        re.IGNORECASE,
+    )
+    if click_intent:
+        target_name_fallback = target_name or click_intent.group(1).strip()
+        return {
+            "type": "click",
+            "target": target_name_fallback,
+            "x": 500,
+            "y": 350,
+            "normalized": True,
+            "textToType": text_to_type,
+        }
+
+    return None
+
+
 class ScreenshotHandler(BaseHTTPRequestHandler):
     def _send_json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -211,6 +343,28 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/screenshots/"):
+            filename = os.path.basename(parsed.path)
+            filepath = os.path.join(SCREENSHOTS_DIR, filename)
+            if os.path.exists(filepath) and os.path.isfile(filepath):
+                try:
+                    with open(filepath, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+                except Exception as err:
+                    self._send_json(500, {"ok": False, "error": str(err)})
+                    return
+            else:
+                self._send_json(404, {"ok": False, "error": "file not found"})
+                return
+
         if parsed.path == "/health":
             vllm_ok = check_vllm_health()
             self._send_json(200, {
@@ -283,16 +437,23 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
 
         # Query UI-TARS via vLLM
         vllm_result = query_uitars(data, user_prompt)
+        analysis_text = vllm_result.get("analysis", "")
+        mouse_action = extract_mouse_action(analysis_text, user_prompt)
+        if mouse_action:
+            print(f"[receiver] Mouse action detected: {mouse_action}", flush=True)
 
+        url = f"http://{HOST}:{PORT}/screenshots/{filename}"
         self._send_json(200, {
             "ok": True,
             "path": rel_path,
+            "url": url,
             "absolute_path": dest,
             "bytes": len(data),
             "timestamp": ts,
-            "analysis": vllm_result.get("analysis"),
+            "analysis": analysis_text,
             "analysis_error": vllm_result.get("error"),
             "vllm_status": "online" if vllm_result.get("success") else "offline",
+            "action": mouse_action,
         })
 
     def log_message(self, fmt: str, *args) -> None:

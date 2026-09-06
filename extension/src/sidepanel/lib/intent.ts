@@ -1,33 +1,61 @@
 import type { ContextMode, TurnMode } from "../types.js";
 
-const PAGE_INDICATORS: RegExp[] = [
-  // Page, site, tab, or screen references
-  /\b(this\s+page|the\s+page|current\s+page|this\s+site|the\s+site|this\s+website|the\s+website|this\s+tab|the\s+tab|current\s+tab|on\s+screen|my\s+screen|the\s+screen|whole\s+page|entire\s+page|webpage)\b/i,
+/**
+ * Pure small talk, greetings, and off-screen general conversational patterns.
+ * ONLY prompts strictly matching these patterns will bypass page inspection.
+ */
+const CASUAL_CHAT_PATTERNS: RegExp[] = [
+  // Greetings
+  /^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|sup|yo|hola|greetings)[\s!.,?]*$/i,
 
-  // Screenshot / visual requests
-  /\b(screenshot|take\s+a\s+screenshot|capture|snapshot|what\s+do\s+you\s+see|can\s+you\s+see|look\s+at\s+(this|the)|view\s+this)\b/i,
+  // Assistant identity & small talk
+  /^(how\s+are\s+you|who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|what\s+is\s+your\s+name|introduce\s+yourself|help|test)[\s!.,?]*$/i,
 
-  // Direct UI interaction or element localization
-  /\b(click|press|tap|fill\s+out|fill\s+in|scroll\s+to|find\s+(the|this|a)|locate\s+(the|this)|where\s+is\s+(the|this))\s+(button|link|form|input|field|navbar|header|footer|pricing|cart|checkout|icon|menu|dropdown|popup|dialog|banner|modal)\b/i,
+  // Pleasantries
+  /^(thanks|thank\s+you|ok|okay|bye|goodbye|cool|nice|great|awesome)[\s!.,?]*$/i,
 
-  // UI elements mentioned specifically
-  /\b(navbar|nav\s+bar|header\s+banner|pricing\s+table|checkout\s+button|login\s+button|sign\s*in\s+button|search\s+bar|video\s+player)\b/i,
-
-  // Page reading & summarization
-  /\b(summarize\s+(this|the)\s+(page|article|site|tab|text|content)|read\s+(this|the)\s+(page|article|content|post))\b/i,
-
-  // Inquiries about current UI state
-  /\b(what('s| is)\s+on\s+(this|the)\s+(page|screen|tab|site)|what\s+does\s+this\s+page\s+say|what\s+is\s+this\s+site\s+about)\b/i,
+  // General off-screen knowledge / programming not referencing browser
+  /^(tell\s+me\s+a\s+joke|what\s+is\s+the\s+capital\s+of|how\s+far\s+is\s+the\s+moon|explain\s+quantum|write\s+a\s+python\s+script\s+for\s+bubble\s+sort)[\s!.,?]*$/i,
 ];
 
 /**
- * Checks if the prompt contains signals that the user is referring to
- * or asking about the active webpage / visual screen.
+ * Explicit browser action, navigation, search, or page inspection patterns.
+ * Always given precedence.
+ */
+const BROWSER_ACTION_PATTERNS: RegExp[] = [
+  // Search & finding
+  /\b(search|find|lookup|look\s+up|locate|filter)\b/i,
+
+  // Mouse & UI interaction
+  /\b(click|press|tap|select|choose|open|fill|type|enter|scroll|check|tick)\b/i,
+
+  // Follow-up task commands
+  /^(proceed|continue|go\s+ahead|do\s+it|yes|ok\s+proceed|start|run)[\s!.,?]*$/i,
+
+  // Page, screen, content inquiries
+  /\b(page|screen|website|site|tab|viewport|deadline|organization|problem|button|link|input|banner|navbar)\b/i,
+  /\b(summarize|read|describe|explain|what('s| is)\s+(this|the|on))\b/i,
+];
+
+/**
+ * Determines whether the user prompt requires page context / UI-TARS vision.
  */
 export function isPageContextRequested(promptText: string): boolean {
   const trimmed = promptText.trim();
   if (!trimmed) return false;
-  return PAGE_INDICATORS.some((pattern) => pattern.test(trimmed));
+
+  // 1. If it matches explicit browser action patterns, vision is required
+  if (BROWSER_ACTION_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return true;
+  }
+
+  // 2. If it matches casual chat small talk, no vision needed
+  if (CASUAL_CHAT_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return false;
+  }
+
+  // 3. Default to vision for any contextual or complex instruction in the browser
+  return true;
 }
 
 /**
@@ -38,6 +66,6 @@ export function resolveTurnMode(promptText: string, contextMode: ContextMode = "
   if (contextMode === "page") return "vision";
   if (contextMode === "chat") return "chat";
 
-  // In "auto" mode, intelligently classify the prompt
+  // In "auto" mode:
   return isPageContextRequested(promptText) ? "vision" : "chat";
 }

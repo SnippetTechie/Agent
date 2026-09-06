@@ -1,5 +1,5 @@
 export type StepCategory = "sanitizing" | "reasoning" | "executing" | "completed";
-export type StepStatus = "pending" | "active" | "done" | "error";
+export type StepStatus = "pending" | "active" | "done" | "error" | "skipped";
 
 export type RedactionTag = "CREDENTIAL" | "COORDINATES" | "FACE" | "ID_NUMBER" | "SIGNATURE";
 
@@ -42,6 +42,15 @@ export type TurnStatus =
   | "stopped"
   | "error";
 
+export interface ScreenshotItem {
+  id: string;
+  dataUrl?: string;
+  url?: string;
+  savedPath?: string;
+  label?: string;
+  scrollY?: number;
+}
+
 /**
  * The real screenshot captured for a turn (chrome.tabs.captureVisibleTab)
  * and saved into the screenshots folder via chrome.downloads.
@@ -53,16 +62,30 @@ export interface ScreenshotInfo {
   saved: boolean;
   /** Destination path where the PNG was saved (e.g. screenshots/<timestamp>-<name>.png). */
   savedPath?: string;
+  /** Direct URL to fetch the image from local receiver if dataUrl is empty */
+  url?: string;
   /** Human-readable failure reason, when capture or saving failed. */
   error?: string;
   /** Simplified description / analysis from UI-TARS. */
   analysis?: string;
   /** Error from UI-TARS if vision inference failed. */
   analysisError?: string;
+  /** Screenshots displayed horizontally side-by-side. */
+  items?: ScreenshotItem[];
 }
 
 export type TurnMode = "chat" | "vision";
 export type ContextMode = "auto" | "page" | "chat";
+export type TabScope = "single" | "all";
+
+export interface VarmaMouseAction {
+  type: "click" | "move";
+  x: number;
+  y: number;
+  target?: string;
+  normalized?: boolean;
+  textToType?: string;
+}
 
 export interface AgentTurn {
   id: string;
@@ -78,6 +101,8 @@ export interface AgentTurn {
   screenshot?: ScreenshotInfo;
   /** Simplified description / analysis from UI-TARS. */
   analysis?: string;
+  /** Mouse click / movement action identified for V.A.R.M.A blue cursor */
+  mouseAction?: VarmaMouseAction;
 }
 
 export interface AuditLogEntry {
