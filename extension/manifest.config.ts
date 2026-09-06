@@ -31,7 +31,13 @@ export default defineManifest({
   // captured screenshots to the local receiver without popup dialogs.
   // scripting allows measuring document scroll height and scrolling the page.
   permissions: ["sidePanel", "activeTab", "storage", "scripting"],
-  host_permissions: ["<all_urls>", "http://127.0.0.1:8000/*", "http://localhost:8000/*"],
+  host_permissions: [
+    "<all_urls>",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8002/*",
+    "http://localhost:8002/*",
+  ],
   icons: {
     16: "public/icons/icon16.png",
     48: "public/icons/icon48.png",

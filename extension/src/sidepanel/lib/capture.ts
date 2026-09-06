@@ -10,7 +10,7 @@
  * pages (e.g. chrome://) or outside an extension context.
  */
 
-const RECEIVER_URL = "http://127.0.0.1:8000/screenshot";
+const RECEIVER_URL = "http://127.0.0.1:8002/screenshot";
 const MAX_TOTAL_HEIGHT = 16000; // max canvas height in CSS px
 const MAX_SCROLL_SLICES = 12;   // safety cap against infinite-scroll pages
 const SLICE_PAINT_DELAY_MS = 120;
@@ -25,6 +25,12 @@ export interface CaptureResult {
   savedPath?: string;
   /** Number of bytes saved. */
   bytes?: number;
+  /** UI-TARS vision analysis/description of the screenshot. */
+  analysis?: string;
+  /** Error message from UI-TARS/vLLM if analysis failed. */
+  analysisError?: string;
+  /** Status of the vLLM model connection. */
+  vllmStatus?: "online" | "offline";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -349,7 +355,10 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
   try {
     const res = await fetch(`${RECEIVER_URL}?name=${encodeURIComponent(safeName)}`, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream" },
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Prompt": encodeURIComponent(prompt),
+      },
       body: blob,
     });
 
@@ -361,12 +370,23 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
       };
     }
 
-    const json = (await res.json()) as { ok: boolean; path?: string; bytes?: number };
+    const json = (await res.json()) as {
+      ok: boolean;
+      path?: string;
+      bytes?: number;
+      analysis?: string;
+      analysis_error?: string;
+      vllm_status?: "online" | "offline";
+    };
+
     return {
       ok: true,
       dataUrl,
       savedPath: json.path,
       bytes: json.bytes,
+      analysis: json.analysis,
+      analysisError: json.analysis_error,
+      vllmStatus: json.vllm_status,
     };
   } catch (err) {
     return {

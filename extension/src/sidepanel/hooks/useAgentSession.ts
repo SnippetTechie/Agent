@@ -140,15 +140,17 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           // the screenshots folder via chrome.downloads.
           if (i === 0) {
             const result = await captureAndSaveScreenshot(turn.prompt);
-            // Attach the real screenshot + save status to the turn so the
-            // UI can show the captured image and a saved/failed badge.
+            // Attach the real screenshot + save status + UI-TARS analysis to the turn.
             updateTurn(turn.id, {
               screenshot: {
                 dataUrl: result.dataUrl,
                 saved: result.ok,
                 savedPath: result.savedPath,
                 error: result.error,
+                analysis: result.analysis,
+                analysisError: result.analysisError,
               },
+              analysis: result.analysis,
             });
             appendAudit([
               {
@@ -160,6 +162,22 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
                 tag: "SESSION",
               },
             ]);
+            if (result.analysis) {
+              appendAudit([
+                {
+                  id: nextId("audit"),
+                  timestamp: Date.now(),
+                  message: "UI-TARS analyzed screenshot and generated simplified description",
+                  tag: "SESSION",
+                },
+              ]);
+            }
+          }
+
+          if (step.category === "reasoning") {
+            updateStep(turn.id, step.id, {
+              detail: "UI-TARS visual perception & scene analysis",
+            });
           }
 
           await sleep(STEP_DELAY_MS[i % STEP_DELAY_MS.length] ?? 800, signal);
@@ -179,7 +197,12 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
         }
 
         const maskedCount = turn.steps.find((s) => s.preview)?.preview?.boxes.length ?? 0;
-        updateTurn(turn.id, { status: "completed", summary: buildSummary(t, "completed", maskedCount) });
+        const defaultSummary = buildSummary(t, "completed", maskedCount);
+        updateTurn(turn.id, (prevTurn) => ({
+          ...prevTurn,
+          status: "completed",
+          summary: prevTurn.analysis || defaultSummary,
+        }));
         soundEngine.playComplete();
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {

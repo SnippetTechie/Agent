@@ -55,6 +55,10 @@ export interface ScreenshotInfo {
   savedPath?: string;
   /** Human-readable failure reason, when capture or saving failed. */
   error?: string;
+  /** Simplified description / analysis from UI-TARS. */
+  analysis?: string;
+  /** Error from UI-TARS if vision inference failed. */
+  analysisError?: string;
 }
 
 export interface AgentTurn {
@@ -66,6 +70,8 @@ export interface AgentTurn {
   status: TurnStatus;
   summary?: string;
   screenshot?: ScreenshotInfo;
+  /** Simplified description / analysis from UI-TARS. */
+  analysis?: string;
 }
 
 export interface AuditLogEntry {

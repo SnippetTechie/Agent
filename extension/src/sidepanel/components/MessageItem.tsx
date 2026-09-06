@@ -2,6 +2,7 @@ import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
 import { ConfirmationBanner } from "./ConfirmationBanner.js";
 import { ScreenshotPreview } from "./ScreenshotPreview.js";
+import { VlmAnalysisCard } from "./VlmAnalysisCard.js";
 
 const SUMMARY_TONE: Record<AgentTurn["status"], string> = {
   running: "",
@@ -21,7 +22,8 @@ export function MessageItem({
   onApprove: () => void;
   onDeny: () => void;
 }) {
-  const showSummary = turn.summary && turn.status !== "running" && turn.status !== "awaiting-approval";
+  const hasAnalysis = !!turn.analysis;
+  const showSummary = !hasAnalysis && turn.summary && turn.status !== "running" && turn.status !== "awaiting-approval";
 
   return (
     <div className="animate-varma-rise space-y-2">
@@ -34,6 +36,12 @@ export function MessageItem({
       <div className="flex max-w-[92%] flex-col gap-2">
         <ActionCard turn={turn} />
         {turn.screenshot && <ScreenshotPreview screenshot={turn.screenshot} />}
+        {hasAnalysis && (
+          <VlmAnalysisCard
+            analysis={turn.analysis}
+            error={turn.screenshot?.analysisError}
+          />
+        )}
         {turn.approval && <ConfirmationBanner approval={turn.approval} onApprove={onApprove} onDeny={onDeny} />}
         {showSummary && (
           <div
