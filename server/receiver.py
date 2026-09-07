@@ -10,12 +10,37 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREENSHOTS_DIR = os.path.join(PROJECT_ROOT, "screenshots")
+
+
+def _load_dotenv(path: str) -> None:
+    """Minimal stdlib-only .env loader. Never overrides a var already set in the environment."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv(os.path.join(PROJECT_ROOT, "server", ".env"))
+
 HOST = os.environ.get("RECEIVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RECEIVER_PORT", "8002"))
 
 # Default vLLM URL (vLLM running on localhost:8000 or via SSH tunnel)
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "UI-TARS-7B")
+
+# Shown to the user only when the vLLM server/tunnel is unreachable. Keep real
+# hostnames/users/ports out of source — set the real command in server/.env
+# (gitignored); see server/.env.example for the shape.
+SSH_TUNNEL_HINT = os.environ.get("SSH_TUNNEL_HINT", "ssh -L 8000:localhost:8000 <user>@<host>")
 
 
 import socket
@@ -110,7 +135,7 @@ def query_uitars(image_bytes: bytes, user_prompt: str) -> dict:
     except urllib.error.URLError as err:
         msg = (
             f"vLLM server unreachable at {VLLM_BASE_URL}. "
-            f"Ensure start_vllm_uitars.sh is running and forwarded (e.g. ssh -L 8001:localhost:8000). Error: {err}"
+            f"Ensure start_vllm_uitars.sh is running and forwarded (e.g. {SSH_TUNNEL_HINT}). Error: {err}"
         )
         print(f"[receiver] {msg}", flush=True)
         return {
@@ -189,7 +214,7 @@ def query_chat(messages: list, prompt: str) -> dict:
             "response": (
                 "Hello! I am V.A.R.M.A, your browser AI companion. "
                 "I am currently in local standby because the vLLM server/SSH tunnel is disconnected. "
-                "To connect my full reasoning and UI-TARS vision capabilities, start your SSH tunnel (`ssh -p 2222 -L 8000:localhost:8000 vispl@103.89.8.32`)."
+                f"To connect my full reasoning and UI-TARS vision capabilities, start your SSH tunnel (`{SSH_TUNNEL_HINT}`)."
             ),
         }
     except Exception as err:
