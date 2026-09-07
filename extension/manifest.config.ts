@@ -30,7 +30,9 @@ export default defineManifest({
   // <all_urls> allows capturing visible tabs. Localhost origins allow POSTing
   // captured screenshots to the local receiver without popup dialogs.
   // scripting allows measuring document scroll height and scrolling the page.
-  permissions: ["sidePanel", "activeTab", "storage", "scripting"],
+  // tabGroups lets V.A.R.M.A visually mark the tab it currently has access
+  // to, the same way Claude in Chrome labels the tab it's working in.
+  permissions: ["sidePanel", "activeTab", "storage", "scripting", "tabGroups"],
   host_permissions: [
     "<all_urls>",
     "http://127.0.0.1:8000/*",

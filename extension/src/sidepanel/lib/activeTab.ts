@@ -1,4 +1,5 @@
 import type { TabContext } from "../types.js";
+import { markTabAccessedByVarma } from "./tabAccess.js";
 
 const UNKNOWN: TabContext = { domain: null, isSecure: false };
 
@@ -15,6 +16,7 @@ export async function getActiveTabContext(): Promise<TabContext> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) return UNKNOWN;
+    if (typeof tab.id === "number") void markTabAccessedByVarma(tab.id);
     const url = new URL(tab.url);
     return {
       domain: url.hostname || url.protocol.replace(":", ""),
