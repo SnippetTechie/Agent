@@ -3,6 +3,7 @@ dist/
 .vite/
 *.log
 /screenshots/
+/reference
 
 # Python
 .venv/
