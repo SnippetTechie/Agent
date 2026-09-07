@@ -13,6 +13,7 @@ import { getActiveTabContext, watchActiveTabContext } from "../lib/activeTab.js"
 import { captureAndSaveScreenshot, sendChatMessage, type ChatMessage } from "../lib/capture.js";
 import { resolveTurnMode } from "../lib/intent.js";
 import { animateVarmaMouse } from "../lib/varmaMouse.js";
+import { showVarmaOverlay, hideVarmaOverlay } from "../lib/varmaOverlay.js";
 import { loadState, saveState, clearState } from "../lib/storage.js";
 import { soundEngine } from "../lib/sound.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
@@ -112,6 +113,7 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
   const runTurn = useCallback(
     async (turn: AgentTurn, domain: string, isRisky: boolean, controller: AbortController) => {
       const { signal } = controller;
+      let overlayTabId: number | undefined;
       try {
         if (turn.mode === "chat") {
           // Pure conversational flow: Zero screenshot capture, zero page scrolling!
@@ -152,6 +154,17 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           soundEngine.playComplete();
           return;
         }
+
+        // Show the task-glow overlay on the tab this turn is actually
+        // acting on, for the duration of the turn (mirrors the per-click
+        // active-tab lookup used for the mouse animation further below).
+        try {
+          const focusedTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          overlayTabId = focusedTabs[0]?.id ?? (await chrome.tabs.query({ active: true }))[0]?.id;
+        } catch (err) {
+          console.warn("[varma] Error resolving tab for overlay:", err);
+        }
+        if (typeof overlayTabId === "number") void showVarmaOverlay(overlayTabId);
 
         let detectedAction: VarmaMouseAction | undefined = undefined;
 
@@ -366,6 +379,8 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
         } else {
           updateTurn(turn.id, { status: "error", summary: buildSummary(t, "error", 0) });
         }
+      } finally {
+        if (typeof overlayTabId === "number") void hideVarmaOverlay(overlayTabId);
       }
     },
     [updateTurn, updateStep, appendAudit, t, approvalMode, turns]
@@ -402,6 +417,17 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
   const stopCurrentTurn = useCallback(() => {
     abortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (typeof chrome === "undefined" || !chrome.runtime?.onMessage) return;
+    const listener = (message: unknown) => {
+      if (message && typeof message === "object" && (message as { type?: string }).type === "varma:stop-requested") {
+        stopCurrentTurn();
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, [stopCurrentTurn]);
 
   const resolveApproval = useCallback((approved: boolean) => {
     const runningTurnId = [...approvalResolvers.current.keys()].pop();
