@@ -7,11 +7,16 @@ import { PrivacyNoticeBanner } from "./components/PrivacyNoticeBanner.js";
 import { useAgentSession } from "./hooks/useAgentSession.js";
 import { useApprovalMode } from "./hooks/useApprovalMode.js";
 import { usePrivacyNotice } from "./hooks/usePrivacyNotice.js";
+import { useVisualSettings } from "./hooks/useVisualSettings.js";
 
 export function SidePanel() {
   const [approvalMode, setApprovalMode] = useApprovalMode();
   const { loaded: noticeLoaded, choice: noticeChoice, respond: respondToNotice } = usePrivacyNotice();
   const persistEnabled = noticeChoice !== "rejected";
+
+  // Single source of truth for the on-page visual layer, shared by the
+  // settings menu and the run loop.
+  const [visuals, updateVisuals] = useVisualSettings();
 
   const {
     turns,
@@ -23,13 +28,18 @@ export function SidePanel() {
     approveCurrentTurn,
     denyCurrentTurn,
     clearSession,
-  } = useAgentSession(approvalMode, persistEnabled);
+  } = useAgentSession(approvalMode, persistEnabled, visuals);
 
   const [auditOpen, setAuditOpen] = useState(false);
 
   return (
     <div className="animate-varma-panel-in relative flex h-screen flex-col overflow-hidden bg-varma-bg text-varma-text">
-      <Header onClearSession={clearSession} onToggleAuditLog={() => setAuditOpen((v) => !v)} />
+      <Header
+        onClearSession={clearSession}
+        onToggleAuditLog={() => setAuditOpen((v) => !v)}
+        visuals={visuals}
+        updateVisuals={updateVisuals}
+      />
 
       <MessageFeed
         turns={turns}

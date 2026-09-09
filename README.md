@@ -1,168 +1,248 @@
-# V.A.R.M.A — Visual Anonymization & Redacted Mapping Agent
+# V.A.R.M.A — Browser Agent
 
-A Chrome side-panel extension, styled after Claude in Chrome's own panel, built for **SIH26171**
-(ISRO problem statement — on-device redaction for browser agents).
+A Chrome side-panel extension that talks to a local **vLLM** model and drives the
+browser you already have open. Type a question and it answers; type a task and it
+performs it on the real, visible tab.
 
-**Read this first if you're picking this up from someone else on the team.** This repo currently
-contains a complete, polished **frontend** — the whole side panel UI, the agent-run visualization,
-approval flow, 10-language support, sound cues, and a first-run privacy notice. The actual
-"AI agent doing things on a page" part is **simulated** — there is no backend yet. That's the next
-piece to build, and §7 below tells you exactly where it plugs in.
+Built for **SIH26171** (ISRO — on-device perception for light-weight browser agents).
 
 ---
 
-## 1. What's in this repo
+## 1. Architecture
 
-| Path | What it is |
+```
+┌──────────────────────────────────────────────────────────┐
+│ Chrome Side Panel (React)                                │
+│  chat  → POST /chat                                      │
+│  task  → WS /ws/agent  (step events stream back)         │
+└───────────────┬──────────────────────────────▲───────────┘
+                │                              │ PAGE_STATE / ACTION / STEP_COMPLETE
+                ▼                              │
+┌──────────────────────────────────────────────┴───────────┐
+│ FastAPI receiver  :8002                                  │
+│  server/agent/  — the agent loop                         │
+│    observe  → one in-page DOM pass (elements + text)     │
+│    think    → one vLLM structured-output call            │
+│    act      → CDP: click / type / navigate / scroll      │
+└───────┬──────────────────────────────┬───────────────────┘
+        ▼                              ▼
+┌──────────────────┐        ┌──────────────────────────────┐
+│ Chrome via CDP   │        │ vLLM  :8000                  │
+│ :9222            │        │ OpenAI-compatible API        │
+│ (your real tab)  │        │ guided JSON decoding         │
+└──────────────────┘        └──────────────────────────────┘
+```
+
+**No screenshots are sent to the model.** Each step reads the DOM in one
+in-page pass (~10–90 ms), which is both faster and cheaper than a screenshot
+round-trip, and gives the model exact element indices to act on.
+
+### Why not browser-use?
+
+The original prototype used browser-use. It was replaced because:
+
+| Issue | Effect |
 |---|---|
-| `extension/` | **The actual product.** A Manifest V3 Chrome side-panel extension (React + Tailwind). Fully built and installable today. |
-| `Assets/` | Source logo file. |
-| `shared/`, `server/`, `evaluation/`, `scripts/` | Empty placeholders reserved from an earlier architecture direction (see `CLAUDE.md`). **Not used by the current extension** — ignore these unless we deliberately revive that direction. |
-| `CLAUDE.md` | The original SIH26171 problem-statement brief. Useful background, but the extension has moved past some of its specifics (no FastAPI server exists yet, no `/shared` types package is wired up). |
+| Always captures a screenshot per step, even with vision off | ~300–1000 ms wasted per step |
+| Default output schema includes planning + thinking fields | 42 output tokens instead of 21 |
+| Rebuilds the browser session per run | hundreds of ms of reconnection |
 
-If you only care about running the app, you can ignore everything except `extension/`.
+The measured difference on the reference server: **3.16 s → 1.57 s per step**.
 
 ---
 
 ## 2. Prerequisites
 
-- **Node.js 18+**
-- **pnpm** — `corepack enable` (built into modern Node), or `npm install -g pnpm`
-- **Google Chrome** (or another Chromium browser with side panel support — Chrome 114+)
-
----
-
-## 3. Quick start — install and run the real extension
+- **Node.js 18+** and **pnpm**
+- **Python 3.11+**
+- **Chrome or Brave**, running with a debugging port
+- **A vLLM server** exposing an OpenAI-compatible API
 
 ```bash
 pnpm install
+pip install -r server/requirements.txt
+python -m playwright install chromium
+```
+
+---
+
+## 3. Quick start
+
+### Step 1 — Start the browser with CDP
+
+The agent attaches to a browser you launch; it does not start its own.
+
+```bash
+# Windows
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\ChromeDevProfile"
+
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome-dev"
+
+# Linux
+google-chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome-dev"
+```
+
+> Use a dedicated `--user-data-dir`. Chrome refuses the debugging port on the
+> default profile.
+
+### Step 2 — Start the model
+
+On the GPU box:
+
+```bash
+vllm serve ./models/gemma-3-12b-it \
+  --served-model-name gemma-3 \
+  --trust-remote-code \
+  --dtype bfloat16 \
+  --max-model-len 32768
+```
+
+If the GPU box is remote, tunnel it on the machine running the extension:
+
+```bash
+ssh -L 8000:localhost:8000 user@gpu-host
+```
+
+### Step 3 — Start the receiver
+
+```bash
+python scripts/start_server.py     # or: python server/receiver.py
+```
+
+### Step 4 — Build and load the extension
+
+```bash
 pnpm --filter extension build
 ```
 
-Then in Chrome:
-
-1. Open `chrome://extensions`
-2. Turn on **Developer mode** (top-right toggle)
-3. Click **Load unpacked**
-4. Select the **`extension/dist`** folder — not `extension/` itself, `dist` is the built output
-5. Click the V.A.R.M.A icon in your Chrome toolbar
-
-It opens as a real, docked side panel (not a popup, not a tab). At this point everything works:
-the mock agent runs, the approval flow, all 10 languages, sound cues, mic dictation, and the
-first-run privacy notice.
+Then in Chrome: `chrome://extensions` → **Developer mode** → **Load unpacked** →
+select `extension/dist` → click the V.A.R.M.A icon to open the side panel.
 
 ---
 
-## 4. Development loop (live reload while editing)
+## 4. Usage
 
-```bash
-pnpm --filter extension dev
-```
+| You type | Mode | What happens |
+|---|---|---|
+| "hello", "how are you" | chat | Plain conversational reply, no browser access |
+| "Search for ISRO on Google" | task | The agent drives your tab and reports back |
+| "Open wikipedia.org and search for ISRO" | task | Multi-step navigation + typing |
 
-This starts a Vite dev server on `http://localhost:5173`. Two ways to use it:
+The side panel shows, per step: how many elements the agent could see, how long
+perception took, and exactly which action it executed.
 
-- **Fast iteration** — open `http://localhost:5173/src/sidepanel/sidepanel.html` directly in a
-  normal Chrome tab. `chrome.tabs` / `chrome.storage` aren't available outside a real extension
-  context, so a couple of things fall back gracefully (e.g. the tab-context label shows "No
-  active tab"), but everything else — layout, the mock agent run, i18n, the approval flow —
-  works and hot-reloads instantly as you edit.
-- **Real extension context** — rebuild (`pnpm --filter extension build`) and hit the refresh icon
-  on the V.A.R.M.A card in `chrome://extensions` whenever you need to test against real
-  `chrome.tabs` / `chrome.storage` behavior (e.g. the active-tab pill, or persistence across
-  panel reopens).
+**Approval gate** (dock menu): `skip` (default, fastest) · `auto` · `manual`.
 
-### Commands reference
+---
 
-| Command | What it does |
+## 5. Measured latency
+
+Reference server: single A6000, Gemma-3-12B bf16, vLLM 0.24, ~14.3 tok/s decode.
+
+| Stage | Time |
 |---|---|
-| `pnpm install` | Install all workspace dependencies |
-| `pnpm --filter extension dev` | Start the dev server with hot reload |
-| `pnpm --filter extension build` | Production build → `extension/dist` |
-| `pnpm --filter extension exec tsc -p tsconfig.json --noEmit` | Type-check without building |
+| Perceive (DOM extract + overlay) | **10–90 ms** |
+| Think (vLLM, ~21 output tokens) | **1.5–3.0 s** |
+| Act (click/type/navigate) | **0.4–1.0 s** |
+| **Per step** | **≈ 2.2–4.0 s** |
+
+Decode speed dominates: a step costs roughly `output_tokens / 14.3` seconds.
+The schema is therefore action-only — no `thought`, no plan, no evaluation — and
+the UI label is synthesised locally for free.
+
+**To reach 1–2 s per step, make the model faster** (see §7).
 
 ---
 
-## 5. Project structure
+## 6. Project structure
 
 ```
-extension/
-├── manifest.config.ts        — MV3 manifest: side panel registration, permissions, icons
-├── vite.config.ts            — build config (React + Tailwind v4 + CRXJS)
-├── public/icons/              — toolbar icons (generated from Assets/ logo)
-├── public/_locales/           — Chrome's own extension name/description i18n
-│                                 (separate from the in-app language switcher below)
-└── src/
-    ├── background/index.ts    — opens the side panel when the toolbar icon is clicked
-    ├── assets/varma-logo.png  — logo used in the header and empty state
-    └── sidepanel/
-        ├── SidePanel.tsx      — top-level layout; wires all the hooks together
-        ├── main.tsx           — React mount point
-        ├── types.ts           — core data model: AgentTurn, AgentStep, ApprovalMode, etc.
-        ├── components/        — every UI piece:
-        │   ├── Header.tsx / HeaderMenu.tsx     — top toolbar + overflow menu (language, mute)
-        │   ├── InputDock.tsx                   — the message box: mic/send, approval-mode
-        │   │                                      selector, auto-redact toggle
-        │   ├── ApprovalModeMenu.tsx             — Manually / Automatically / Skip approvals
-        │   ├── MessageFeed.tsx / MessageItem.tsx — the chat transcript
-        │   ├── ActionCard.tsx / StatusChip.tsx  — the step-by-step run visualization
-        │   ├── ConfirmationBanner.tsx           — the Approve/Deny gate for risky actions
-        │   ├── SanitizedCanvasPreview.tsx        — the mock redacted-page preview
-        │   ├── PrivacyAuditModal.tsx             — log of what's been "redacted" this session
-        │   ├── PrivacyNoticeBanner.tsx           — first-run data notice
-        │   └── PromptSuggestions.tsx             — empty-state suggestion chips
-        ├── hooks/
-        │   ├── useAgentSession.ts   — ⭐ the run loop (see §7 — this is what a backend replaces)
-        │   ├── useApprovalMode.ts   — persisted approval-mode preference
-        │   ├── useMuted.ts          — persisted sound preference
-        │   └── usePrivacyNotice.ts  — first-run notice state
-        └── lib/
-            ├── mockAgent.ts    — ⭐ THE MOCK — fake steps, fake redaction boxes, fake summaries
-            ├── i18n/           — translations for 10 languages + the React context/hook
-            ├── sound.ts        — Web Audio UI sound cues (no audio files, synthesized)
-            ├── speech.ts       — real Web Speech API mic-to-text
-            ├── activeTab.ts    — real chrome.tabs lookup for the active tab's domain/favicon
-            └── storage.ts      — chrome.storage wrappers (session vs. local)
+extension/src/
+  background/index.ts              opens the side panel
+  sidepanel/
+    SidePanel.tsx                  layout
+    hooks/useAgentSession.ts       ⭐ run loop (chat + task)
+    lib/agentWebSocket.ts          ⭐ WS client for /ws/agent
+    lib/actions.ts                 action → UI label
+    lib/intent.ts                  chat vs task routing
+    lib/capture.ts                 screenshot preview (not sent to the model)
+    lib/i18n/                      UI translations
+
+server/
+  receiver.py                      ⭐ FastAPI: /chat, /health, /ws/agent
+  agent/
+    loop.py                        ⭐ observe → think → act
+    session.py                     CDP connection + action execution
+    dom.py                         in-page element extraction + overlay
+    prompts.py                     system prompt + JSON schema
+    llm.py                         vLLM client (guided JSON)
+
+scripts/
+  start_server.py                  start the receiver
+  probe_llm.py                     one-call latency probe
+  probe_latency.py                 prompt/output size sweep
+  probe_throughput.py              raw decode tok/s
+  probe_schema.py                  schema cost comparison
+  test_agent.py                    end-to-end agent test
+demo.py                            run a task from the terminal
 ```
 
 ---
 
-## 6. What's real vs. what's mocked
+## 7. Choosing a model
 
-| Piece | Status |
+Decode throughput is the single biggest lever on per-step latency. On the
+reference A6000 (48 GB), `gemma-3-12b-it` in bf16 runs at **14.3 tok/s**, which
+is far below what the hardware can do — the weights are unquantized and the
+model is large for the task.
+
+Recommended, in order:
+
+| Option | Command | Expected decode | Notes |
+|---|---|---|---|
+| **Qwen2.5-7B-Instruct AWQ** | `vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ --served-model-name gemma-3` | 60–90 tok/s | Best balance; strong structured-output reliability |
+| **Gemma-3-4B-IT** | `vllm serve google/gemma-3-4b-it --served-model-name gemma-3` | 50–80 tok/s | Keeps the current family |
+| **Qwen2.5-14B-Instruct AWQ** | `vllm serve Qwen/Qwen2.5-14B-Instruct-AWQ --served-model-name gemma-3` | 40–60 tok/s | Better reasoning, still ~3× faster than now |
+| Gemma-3-12B bf16 | current | 14.3 tok/s | Baseline |
+
+Also try, in order of impact:
+
+1. **Check GPU clocks** — 14 tok/s suggests the GPU is power-capped or the
+   weights are being re-read from host memory. `nvidia-smi -q -d CLOCK,PERFORMANCE`
+   during a request. A healthy A6000 with AWQ 7B should exceed 60 tok/s.
+2. `--quantization awq` (or serve a pre-quantized checkpoint).
+3. `--enforce-eager` is **not** recommended — leave CUDA graphs on.
+4. Keep `--enable-prefix-caching` on (it is by default in recent vLLM). The
+   agent's system prompt is byte-identical across steps, so it is cached.
+
+The server tells you which model it is using: `curl http://127.0.0.1:8000/v1/models`.
+
+---
+
+## 8. Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `RECEIVER_HOST` | `127.0.0.1` | Receiver bind address |
+| `RECEIVER_PORT` | `8002` | Receiver port |
+| `VLLM_BASE_URL` | `http://127.0.0.1:8000/v1` | vLLM endpoint |
+| `VLLM_MODEL` | `gemma-3` | Served model name |
+| `VLLM_MAX_TOKENS` | `512` | Max output tokens per step |
+| `CDP_URL` | `http://localhost:9222` | Browser debugging endpoint |
+| `AGENT_MAX_STEPS` | `15` | Step cap per task |
+| `AGENT_MAX_ACTIONS_PER_STEP` | `3` | Actions the model may emit |
+| `AGENT_SHOW_OVERLAY` | `1` | Draw numbered boxes on the page |
+| `AGENT_SHOW_CURSOR` | `1` | Animate a cursor on actions |
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Fix |
 |---|---|
-| UI, layout, animations, all 10 languages, sound cues | **Real** |
-| Mic-to-text dictation | **Real** — browser's Web Speech API |
-| Active-tab context (favicon, domain) | **Real** — via `chrome.tabs` |
-| Session history / preferences storage | **Real** — `chrome.storage.session` / `chrome.storage.local` |
-| First-run privacy notice + its Accept/Reject effect | **Real** — Reject genuinely disables local persistence |
-| Redaction detection, "server reasoning," action execution | **Mocked** — `lib/mockAgent.ts` fakes this with keyword matching and timed delays. No real page is inspected, no backend is called. |
-| Approval gate (manual / automatic / skip) | Real UI and state machine — but the thing being approved is fake |
-
----
-
-## 7. Where the real backend plugs in
-
-The one function that matters is `runTurn()` inside `hooks/useAgentSession.ts`. Right now it:
-
-1. Calls into `lib/mockAgent.ts` (`buildInitialSteps`, `buildApprovalRequest`, `buildSummary`) to
-   fabricate a plausible-looking 4-step run.
-2. `await sleep(...)` between each step instead of waiting on a real response.
-
-To wire in a real backend, replace that with actual calls to the reasoning service — sending the
-real page content (respecting the auto-redact toggle already in `InputDock.tsx`) and receiving
-back genuine step-by-step status instead of fabricated ones.
-
-Keep the response shapes compatible with what's already in `types.ts` (`AgentTurn`, `AgentStep`,
-`RedactionBox`, `ApprovalRequest`) and the existing components won't need to change. In
-particular, `SanitizedCanvasPreview.tsx` already renders redaction boxes generically from
-`{ tag, x, y, w, h }` (percentage-based) — feed it real coordinates and it should just work.
-
----
-
-## 8. Known limitations
-
-- No real network calls exist anywhere yet — everything client-side is simulated.
-- `shared/`, `server/`, `evaluation/` are empty. If the original FastAPI-based architecture from
-  `CLAUDE.md` gets revived, that's where it lives.
-- Mic dictation needs a real microphone permission grant on first use — Chrome will prompt.
-- The embedded logo asset is a large PNG (~580KB); worth compressing before a real release build.
+| `Cannot reach the browser on ...9222` | Launch Chrome/Brave with `--remote-debugging-port=9222` and a dedicated `--user-data-dir` |
+| `Cannot reach vLLM` | Start the server, or open the SSH tunnel |
+| Agent repeats the same click | It is already blocked after 3 repeats; the model is too small — see §7 |
+| Steps feel slow | Check decode tok/s with `python scripts/probe_throughput.py` |
+| Wrong element clicked | The page changed between read and act; indexes are per-step |

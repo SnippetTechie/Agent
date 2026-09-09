@@ -60,6 +60,12 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "src/sidepanel/main.tsx"),
+        background: path.resolve(__dirname, "src/background/index.ts"),
+      },
+    },
   },
   server: {
     port: 5173,

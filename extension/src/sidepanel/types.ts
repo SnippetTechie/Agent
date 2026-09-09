@@ -1,19 +1,22 @@
 export type StepCategory = "sanitizing" | "reasoning" | "executing" | "completed";
 export type StepStatus = "pending" | "active" | "done" | "error" | "skipped";
 
+/**
+ * Sensitive-data categories the local layer can tag. Retained so the audit log
+ * and redaction UI keep a stable vocabulary; the current agent path is
+ * DOM-only and does not emit redaction boxes.
+ */
 export type RedactionTag = "CREDENTIAL" | "COORDINATES" | "FACE" | "ID_NUMBER" | "SIGNATURE";
 
-export interface RedactionBox {
-  tag: RedactionTag;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export interface RedactionPreview {
-  maskedCount: number;
-  boxes: RedactionBox[];
+/**
+ * A structured action emitted by the agent (click, type, scroll, etc.).
+ * Serialized from the server's step events.
+ */
+export interface BrowserUseAction {
+  name?: string;
+  type?: string;
+  params?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface AgentStep {
@@ -22,7 +25,8 @@ export interface AgentStep {
   detail?: string;
   category: StepCategory;
   status: StepStatus;
-  preview?: RedactionPreview;
+  /** The action(s) the agent executed in this step. */
+  actions?: BrowserUseAction[];
 }
 
 export type ApprovalState = "pending" | "approved" | "denied";
@@ -42,50 +46,9 @@ export type TurnStatus =
   | "stopped"
   | "error";
 
-export interface ScreenshotItem {
-  id: string;
-  dataUrl?: string;
-  url?: string;
-  savedPath?: string;
-  label?: string;
-  scrollY?: number;
-}
-
-/**
- * The real screenshot captured for a turn (chrome.tabs.captureVisibleTab)
- * and saved into the screenshots folder via chrome.downloads.
- */
-export interface ScreenshotInfo {
-  /** The captured viewport as a data URL ("" when capture failed). */
-  dataUrl: string;
-  /** True when the PNG was successfully saved to the screenshots folder. */
-  saved: boolean;
-  /** Destination path where the PNG was saved (e.g. screenshots/<timestamp>-<name>.png). */
-  savedPath?: string;
-  /** Direct URL to fetch the image from local receiver if dataUrl is empty */
-  url?: string;
-  /** Human-readable failure reason, when capture or saving failed. */
-  error?: string;
-  /** Simplified description / analysis from UI-TARS. */
-  analysis?: string;
-  /** Error from UI-TARS if vision inference failed. */
-  analysisError?: string;
-  /** Screenshots displayed horizontally side-by-side. */
-  items?: ScreenshotItem[];
-}
-
 export type TurnMode = "chat" | "vision";
 export type ContextMode = "auto" | "page" | "chat";
 export type TabScope = "single" | "all";
-
-export interface VarmaMouseAction {
-  type: "click" | "move";
-  x: number;
-  y: number;
-  target?: string;
-  normalized?: boolean;
-  textToType?: string;
-}
 
 export interface AgentTurn {
   id: string;
@@ -98,11 +61,8 @@ export interface AgentTurn {
   approval?: ApprovalRequest;
   status: TurnStatus;
   summary?: string;
-  screenshot?: ScreenshotInfo;
-  /** Simplified description / analysis from UI-TARS. */
+  /** Final answer / page summary from the agent. */
   analysis?: string;
-  /** Mouse click / movement action identified for V.A.R.M.A blue cursor */
-  mouseAction?: VarmaMouseAction;
 }
 
 export interface AuditLogEntry {
@@ -120,20 +80,16 @@ export interface TabContext {
 }
 
 /**
- * A canned suggestion chip carries an explicit intent so redaction-box
- * detection doesn't depend on regex-matching translated (non-English)
- * button text. Free-typed prompts have no intent and fall back to
- * English-keyword matching in lib/mockAgent.ts — a known limitation of
- * this mocked layer, not of a real NLU backend.
+ * A canned suggestion chip carries an explicit intent so the routing doesn't
+ * depend on regex-matching translated (non-English) button text.
  */
 export type SuggestionIntent = "sanitize" | "navigate" | "telemetry";
 
 /**
  * Governs how a risky action's approval gate behaves:
- * - manual: pause and wait for an explicit Approve/Deny click (default).
+ * - manual: pause and wait for an explicit Approve/Deny click.
  * - auto: still surfaces the approval banner (for the audit trail), but
  *   resolves it as approved after a brief visible pause — no click needed.
- * - skip: bypasses the approval gate entirely, as if the action weren't
- *   risky at all.
+ * - skip: bypasses the approval gate entirely (default, fastest).
  */
 export type ApprovalMode = "manual" | "auto" | "skip";

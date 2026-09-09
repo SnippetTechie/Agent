@@ -7,13 +7,12 @@ interface VlmAnalysisCardProps {
 }
 
 /**
- * Displays the simplified description and vision reasoning produced by
- * the UI-TARS vision-language model for the captured screenshot.
+ * Displays the agent's answer / page summary for a task turn.
  */
 export function VlmAnalysisCard({
   analysis,
   error,
-  modelName = "UI-TARS-7B",
+  modelName = "agent",
 }: VlmAnalysisCardProps) {
   if (!analysis && !error) return null;
 
@@ -25,7 +24,7 @@ export function VlmAnalysisCard({
             <Sparkles className="h-3.5 w-3.5" />
           </span>
           <span className="text-[12px] font-semibold text-varma-text">
-            UI-TARS Vision Analysis
+            Agent Result
           </span>
         </div>
         <span className="inline-flex items-center gap-1 rounded-full border border-varma-border bg-varma-bg px-2 py-0.5 text-[10px] font-medium text-varma-text-dim">

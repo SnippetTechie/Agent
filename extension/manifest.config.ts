@@ -27,16 +27,17 @@ export default defineManifest({
     service_worker: "src/background/index.ts",
     type: "module",
   },
-  // <all_urls> allows capturing visible tabs. Localhost origins allow POSTing
-  // captured screenshots to the local receiver without popup dialogs.
-  // scripting allows measuring document scroll height and scrolling the page.
-  permissions: ["sidePanel", "activeTab", "storage", "scripting"],
+  // <all_urls> lets the panel read the active tab's URL/favicon for context.
+  // Localhost origins allow talking to the local receiver without popups.
+  permissions: ["sidePanel", "activeTab", "storage"],
   host_permissions: [
     "<all_urls>",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8002/*",
     "http://localhost:8002/*",
+    "ws://127.0.0.1:8002/*",
+    "ws://localhost:8002/*",
   ],
   icons: {
     16: "public/icons/icon16.png",

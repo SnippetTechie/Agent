@@ -5,7 +5,9 @@ import { loadState, saveState } from "../lib/storage.js";
 const APPROVAL_MODE_STORAGE_KEY = "varma.approvalMode.v1";
 
 export function useApprovalMode(): [ApprovalMode, (mode: ApprovalMode) => void] {
-  const [mode, setModeState] = useState<ApprovalMode>("manual");
+  // Default to "skip": the agent runs uninterrupted for minimum latency.
+  // Users can switch to auto/manual from the dock for risky sites.
+  const [mode, setModeState] = useState<ApprovalMode>("skip");
 
   useEffect(() => {
     let cancelled = false;

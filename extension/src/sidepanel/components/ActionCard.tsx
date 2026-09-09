@@ -1,9 +1,7 @@
 import { useState } from "react";
-import { ChevronDown, Circle, CircleCheck, CircleX, Eye, EyeOff, LoaderCircle, MinusCircle } from "lucide-react";
-import type { AgentStep, AgentTurn, ScreenshotInfo } from "../types.js";
+import { ChevronDown, Circle, CircleCheck, CircleX, LoaderCircle, MinusCircle } from "lucide-react";
+import type { AgentStep, AgentTurn } from "../types.js";
 import { StatusChip } from "./StatusChip.js";
-import { SanitizedCanvasPreview } from "./SanitizedCanvasPreview.js";
-import { ScreenshotPreview } from "./ScreenshotPreview.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import type { TranslationKey } from "../lib/i18n/I18nContext.js";
 
@@ -17,15 +15,10 @@ function StepIndicator({ status }: { status: AgentStep["status"] }) {
 
 function StepRow({
   step,
-  screenshot,
 }: {
   step: AgentStep;
-  screenshot?: ScreenshotInfo;
 }) {
-  const { t } = useI18n();
-  const [previewOpen, setPreviewOpen] = useState(false);
   const isSkipped = step.status === "skipped";
-  const hasPreview = !!step.preview && !isSkipped;
 
   return (
     <li className={`relative animate-varma-rise pl-6 ${isSkipped ? "opacity-45 select-none" : ""}`}>
@@ -53,34 +46,6 @@ function StepRow({
         </div>
         <StatusChip category={step.category} status={step.status} />
       </div>
-
-      {/* Captured Screenshot section nested directly under Capturing Viewport */}
-      {screenshot && (screenshot.dataUrl || (screenshot.items && screenshot.items.length > 0) || screenshot.savedPath || screenshot.url) && (
-        <ScreenshotPreview screenshot={screenshot} />
-      )}
-
-      {hasPreview && step.status !== "pending" && (
-        <div className="mt-2 animate-varma-rise">
-          <button
-            type="button"
-            onClick={() => setPreviewOpen((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-varma-signal transition-colors hover:text-varma-signal/80 active:scale-[0.97]"
-          >
-            {previewOpen ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            {previewOpen ? t("steps.hidePreview") : t("steps.showPreview")}
-          </button>
-          <div
-            className="grid transition-[grid-template-rows] duration-300 ease-out"
-            style={{ gridTemplateRows: previewOpen ? "1fr" : "0fr" }}
-          >
-            <div className="overflow-hidden">
-              <div className="mt-2">
-                <SanitizedCanvasPreview boxes={step.preview!.boxes} />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </li>
   );
 }
@@ -96,15 +61,12 @@ const STATUS_KEY: Record<AgentTurn["status"], TranslationKey> = {
 
 export function ActionCard({
   turn,
-  screenshot,
 }: {
   turn: AgentTurn;
-  screenshot?: ScreenshotInfo;
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(turn.status === "running" || turn.status === "awaiting-approval");
   const activeStep = turn.steps.find((s) => s.status === "active");
-  const effectiveScreenshot = screenshot || turn.screenshot;
 
   return (
     <div className="rounded-xl border border-varma-border bg-varma-surface/70 backdrop-blur-sm transition-shadow">
@@ -133,16 +95,9 @@ export function ActionCard({
         <div className="overflow-hidden">
           <div className="border-t border-varma-border px-3.5 py-3">
             <ol className="space-y-3.5">
-              {turn.steps.map((step, idx) => {
-                const isCapturing = idx === 0 || step.label.toLowerCase().includes("captur");
-                return (
-                  <StepRow
-                    key={step.id}
-                    step={step}
-                    screenshot={isCapturing ? effectiveScreenshot : undefined}
-                  />
-                );
-              })}
+              {turn.steps.map((step) => (
+                <StepRow key={step.id} step={step} />
+              ))}
             </ol>
           </div>
         </div>

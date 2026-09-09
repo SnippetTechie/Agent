@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "pnpm --filter extension dev",
     "build": "pnpm -r build",
-    "server": "python server/receiver.py",
+    "start": "python scripts/start_server.py",
+    "server": "python scripts/start_server.py",
     "schema:sync": "bash scripts/sync-schemas.sh",
     "eval": "pnpm --filter evaluation exec tsx src/report.ts",
     "test": "pnpm --filter evaluation exec vitest run"

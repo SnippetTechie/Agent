@@ -1,8 +1,6 @@
 import type {
   AgentStep,
   ApprovalRequest,
-  RedactionBox,
-  RedactionTag,
   SuggestionIntent,
   TurnStatus,
 } from "../types.js";
@@ -16,108 +14,31 @@ export function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${counter}`;
 }
 
-const RISKY_WORDS = ["submit", "send", "delete", "purchase", "pay", "confirm", "approve", "execute"];
-
-/**
- * Free-typed prompts only — English-keyword heuristic. Suggestion chips
- * bypass this entirely via their fixed intent (see SUGGESTION_APPROVAL
- * below), so this limitation only affects prompts the user types by hand,
- * regardless of UI language. A real backend would do actual NLU here.
- */
-export function requiresApproval(promptText: string): boolean {
-  const lower = promptText.toLowerCase();
-  return RISKY_WORDS.some((w) => lower.includes(w));
-}
-
-const COORDINATES_BOXES: RedactionBox[] = [
-  { tag: "COORDINATES", x: 8, y: 18, w: 62, h: 9 },
-  { tag: "COORDINATES", x: 8, y: 32, w: 48, h: 9 },
-];
-const GENERIC_FORM_BOXES: RedactionBox[] = [
-  { tag: "CREDENTIAL", x: 8, y: 16, w: 50, h: 8 },
-  { tag: "COORDINATES", x: 8, y: 40, w: 62, h: 8 },
-];
-
-const INTENT_BOXES: Record<SuggestionIntent, RedactionBox[]> = {
-  sanitize: GENERIC_FORM_BOXES,
-  navigate: [],
-  telemetry: COORDINATES_BOXES,
-};
-
-interface BoxPreset {
-  keywords: RegExp;
-  boxes: RedactionBox[];
-}
-
-const PRESETS: BoxPreset[] = [
-  {
-    keywords: /coordinat|telemetry|geospatial|lat|long|orbital/i,
-    boxes: COORDINATES_BOXES,
-  },
-  {
-    keywords: /credential|password|login|auth|sign.?in/i,
-    boxes: [
-      { tag: "CREDENTIAL", x: 8, y: 16, w: 55, h: 8 },
-      { tag: "CREDENTIAL", x: 8, y: 29, w: 55, h: 8 },
-    ],
-  },
-  {
-    keywords: /face|photo|identity|aadhaar|passport|id\b/i,
-    boxes: [
-      { tag: "FACE", x: 8, y: 14, w: 22, h: 28 },
-      { tag: "ID_NUMBER", x: 36, y: 24, w: 46, h: 7 },
-    ],
-  },
-  {
-    keywords: /signature|sign\b/i,
-    boxes: [{ tag: "SIGNATURE", x: 8, y: 62, w: 50, h: 11 }],
-  },
-];
-
-function detectRedactionBoxesFromText(promptText: string): RedactionBox[] {
-  for (const preset of PRESETS) {
-    if (preset.keywords.test(promptText)) return preset.boxes;
-  }
-  if (/form|field|input/i.test(promptText)) return GENERIC_FORM_BOXES;
-  return [];
-}
-
-export function tagLabel(t: Translate, tag: RedactionTag): string {
-  return t(`tags.${tag}`);
-}
-
 export function buildInitialSteps(
   t: Translate,
   domain: string,
   promptText: string,
   intent?: SuggestionIntent
 ): AgentStep[] {
-  const boxes = intent ? INTENT_BOXES[intent] : detectRedactionBoxesFromText(promptText);
-  const maskedDetail =
-    boxes.length > 0
-      ? t("steps.redactionDetailMasked", { n: boxes.length })
-      : t("steps.redactionDetailNone");
-
   return [
     {
       id: nextId("step"),
-      label: t("steps.capturingLabel"),
-      detail: t("steps.capturingDetail", { domain }),
+      label: "Connecting to browser",
+      detail: `Attaching to ${domain} via CDP`,
       category: "sanitizing",
       status: "pending",
     },
     {
       id: nextId("step"),
-      label: t("steps.redactionLabel"),
-      detail: "Skipped (local redaction bypassed)",
-      category: "sanitizing",
-      status: "skipped",
-      preview: { maskedCount: 0, boxes: [] },
+      label: "Perceiving page",
+      detail: "Scanning on-screen interactive elements",
+      category: "reasoning",
+      status: "pending",
     },
     {
       id: nextId("step"),
-      label: t("steps.reasoningLabel"),
-      detail: t("steps.reasoningDetail"),
+      label: "Reasoning & acting",
+      detail: "Model deciding the next action",
       category: "reasoning",
       status: "pending",
     },

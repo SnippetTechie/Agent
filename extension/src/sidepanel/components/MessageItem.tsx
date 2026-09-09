@@ -68,12 +68,9 @@ export function MessageItem({
       </div>
 
       <div className="flex max-w-[92%] flex-col gap-2">
-        <ActionCard turn={turn} screenshot={turn.screenshot} />
+        <ActionCard turn={turn} />
         {hasAnalysis && (
-          <VlmAnalysisCard
-            analysis={turn.analysis}
-            error={turn.screenshot?.analysisError}
-          />
+          <VlmAnalysisCard analysis={turn.analysis} />
         )}
         {turn.approval && <ConfirmationBanner approval={turn.approval} onApprove={onApprove} onDeny={onDeny} />}
         {showSummary && (

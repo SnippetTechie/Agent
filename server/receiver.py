@@ -1,481 +1,425 @@
-import base64
+"""V.A.R.M.A receiver server.
+
+Endpoints
+---------
+GET  /health                 server + vLLM + CDP status
+POST /chat                   conversational reply (no browser)
+POST /screenshot             store a PNG captured by the extension
+GET  /screenshots/<name>     serve a stored PNG
+WS   /ws/agent               run a browser task on the user's active tab
+
+The agent path is intentionally thin: the extension sends a task, this server
+runs the CDP loop and streams step events back. Perception is DOM-based
+(one in-page pass per step), so there is no screenshot upload in the loop.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import datetime
-import json
 import os
-import sys
-import urllib.error
-import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCREENSHOTS_DIR = os.path.join(PROJECT_ROOT, "screenshots")
-HOST = os.environ.get("RECEIVER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("RECEIVER_PORT", "8002"))
-
-# Default vLLM URL (vLLM running on localhost:8000 or via SSH tunnel)
-VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
-VLLM_MODEL = os.environ.get("VLLM_MODEL", "UI-TARS-7B")
-
-
+import re
 import socket
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
-def check_vllm_health() -> bool:
-    """Fast check if the vLLM port is listening."""
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+from server.agent import AgentLoop, AgentRunConfig, BrowserSessionManager, VLLMClient  # noqa: E402
+from server.agent.llm import VLLMError  # noqa: E402
+from server.agent.session import CDPUnavailable  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+HOST = os.getenv("RECEIVER_HOST", "127.0.0.1")
+PORT = int(os.getenv("RECEIVER_PORT", "8002"))
+
+# vLLM. For a remote GPU box, tunnel first: ssh -L 8000:localhost:8000 user@host
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma-3")
+VLLM_MAX_TOKENS = int(os.getenv("VLLM_MAX_TOKENS", "512"))
+
+# Chrome DevTools Protocol endpoint of the browser the user is already using.
+CDP_URL = os.getenv("CDP_URL", "http://localhost:9222")
+
+MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "15"))
+MAX_ACTIONS_PER_STEP = int(os.getenv("AGENT_MAX_ACTIONS_PER_STEP", "3"))
+SHOW_OVERLAY = os.getenv("AGENT_SHOW_OVERLAY", "1") != "0"
+SHOW_CURSOR = os.getenv("AGENT_SHOW_CURSOR", "1") != "0"
+
+SCREENSHOTS_DIR = ROOT_DIR / "screenshots"
+SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Shared, long-lived resources
+# ---------------------------------------------------------------------------
+
+llm = VLLMClient(
+    base_url=VLLM_BASE_URL,
+    model=VLLM_MODEL,
+    max_tokens=VLLM_MAX_TOKENS,
+    temperature=0.0,
+)
+
+session = BrowserSessionManager(
+    cdp_url=CDP_URL,
+    show_overlay=SHOW_OVERLAY,
+    show_cursor=SHOW_CURSOR,
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Own the shared HTTP and CDP connections for the process lifetime."""
+    yield
+    await llm.aclose()
+    await session.disconnect()
+
+
+app = FastAPI(title="V.A.R.M.A receiver", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _port_open(url: str, default_port: int) -> bool:
     try:
-        parsed = urlparse(VLLM_BASE_URL)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        with socket.create_connection((host, port), timeout=0.5):
+        parsed = urlparse(url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or default_port
+        with socket.create_connection((host, port), timeout=1.5):
             return True
     except Exception:
         return False
 
 
-def query_uitars(image_bytes: bytes, user_prompt: str) -> dict:
-    """Send screenshot and user prompt to UI-TARS running on vLLM."""
-    b64_image = base64.b64encode(image_bytes).decode("utf-8")
-    clean_prompt = user_prompt.strip() or "Describe this webpage screenshot in a clear and simplified way."
+def vllm_reachable() -> bool:
+    return _port_open(VLLM_BASE_URL, 8000)
 
-    system_prompt = (
-        "You are UI-TARS, an advanced multimodal GUI agent capable of perceiving web pages and operating the browser.\n"
-        "You have direct visual perception of the user's active viewport.\n\n"
-        "Instructions:\n"
-        "1. DECIDE ACTION TYPE:\n"
-        "   - READ: If the user is asking a question, asking for a summary, looking for information (e.g. deadline, organization, problem description, or details), read the visible page contents and answer clearly.\n"
-        "   - USE MOUSE: If the user wants to search, click, navigate, select, or interact with an element on the screen (e.g. 'search for disaster management', 'click shortlist', 'proceed', 'open on sih.gov.in'), identify the visual target element on the screen and issue a mouse action.\n\n"
-        "2. FOR MOUSE ACTION:\n"
-        "   Always output in this structure:\n"
-        "   Thought: <explain what element you are clicking and why>\n"
-        "   Action: click(start_box='[ymin, xmin, ymax, xmax]')\n"
-        "   (Use 0-1000 normalized coordinates for the bounding box of the element to click).\n"
-        "   If the action is typing or searching, also output:\n"
-        "   Type: \"<text to type>\"\n\n"
-        "3. FOR READING / ANSWERING:\n"
-        "   Provide a clear, direct, and structured answer answering the user's question using the text, tables, and elements on the page."
-    )
 
-    payload = {
-        "model": VLLM_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": clean_prompt,
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64_image}",
-                        },
-                    },
-                ],
-            },
-        ],
-        "max_tokens": 1024,
-        "temperature": 0.2,
+def cdp_reachable() -> bool:
+    return _port_open(CDP_URL, 9222)
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_ORPHAN_RE = re.compile(r"</?think>")
+_SPECIAL_RE = re.compile(r"<\|[^|]+\|>")
+_TOOLTAG_RE = re.compile(r"</?(tool_response|tool_call|tool_result|function_call|function_response)>")
+
+
+def clean_model_response(raw: str) -> str:
+    """Strip reasoning blocks and stray special tokens from model output."""
+    text = _THINK_RE.sub("", raw or "")
+    text = _ORPHAN_RE.sub("", text)
+    text = _TOOLTAG_RE.sub("", text)
+    text = _SPECIAL_RE.sub("", text)
+    return text.strip()
+
+
+def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Coerce a message list into the strict shape Gemma-3's chat template wants.
+
+    At most one leading system message, then strictly alternating user/assistant
+    starting with user. Empty slots are replaced so the template cannot drop them.
+    """
+    if not messages:
+        return [{"role": "user", "content": "Please continue."}]
+
+    system_parts: list[str] = []
+    dialogue: list[dict[str, str]] = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if isinstance(content, list):
+            chunks = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    chunks.append(part.get("text", ""))
+                elif isinstance(part, str):
+                    chunks.append(part)
+            content = "\n".join(c for c in chunks if c and c.strip())
+        elif not isinstance(content, str):
+            content = str(content)
+
+        content = (content or "").strip() or "[Continuing]"
+
+        if role == "system":
+            system_parts.append(content)
+        else:
+            dialogue.append(
+                {"role": "assistant" if role == "assistant" else "user", "content": content}
+            )
+
+    merged: list[dict[str, str]] = []
+    for msg in dialogue:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] += "\n\n" + msg["content"]
+        else:
+            merged.append(msg)
+
+    if not merged:
+        merged = [{"role": "user", "content": "Please continue."}]
+    elif merged[0]["role"] != "user":
+        merged.insert(0, {"role": "user", "content": "Please continue."})
+
+    result: list[dict[str, Any]] = []
+    if system_parts:
+        result.append({"role": "system", "content": "\n\n".join(system_parts)})
+    result.extend(merged)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    models = await llm.list_models() if vllm_reachable() else []
+    return {
+        "status": "ok",
+        "engine": "varma-native-cdp",
+        "vllm": {
+            "base_url": VLLM_BASE_URL,
+            "model": llm.model,
+            "reachable": vllm_reachable(),
+            "available_models": models,
+        },
+        "cdp": {
+            "url": CDP_URL,
+            "reachable": cdp_reachable(),
+            "connected": session.connected,
+        },
+        "config": {
+            "max_steps": MAX_STEPS,
+            "max_actions_per_step": MAX_ACTIONS_PER_STEP,
+            "overlay": SHOW_OVERLAY,
+            "cursor": SHOW_CURSOR,
+        },
+        "last_step": {
+            "observe_ms": round(session.last_observe_ms, 1),
+            "action_ms": round(session.last_action_ms, 1),
+            "llm_ms": round(llm.last_latency_ms, 1),
+        },
     }
 
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        f"{VLLM_BASE_URL}/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
 
-    print(f"[receiver] Dispatching to UI-TARS at {VLLM_BASE_URL}/chat/completions (model: {VLLM_MODEL})...", flush=True)
+@app.get("/screenshots/{filename}")
+async def get_screenshot(filename: str) -> Any:
+    path = (SCREENSHOTS_DIR / filename).resolve()
+    if not str(path).startswith(str(SCREENSHOTS_DIR)) or not path.exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+    return FileResponse(path, media_type="image/png")
+
+
+@app.post("/screenshot")
+async def save_screenshot(request: Request) -> Any:
+    """Store a PNG captured by the extension (used for the UI preview only)."""
     try:
-        # Allow up to 90 seconds for vision inference
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            choices = data.get("choices", [])
-            if choices:
-                text = choices[0].get("message", {}).get("content", "")
-                print(f"[receiver] UI-TARS response received ({len(text)} chars)", flush=True)
-                return {
-                    "success": True,
-                    "analysis": text,
-                    "model": VLLM_MODEL,
-                }
-            return {
-                "success": False,
-                "error": "No completion choice returned by vLLM",
-            }
-    except urllib.error.URLError as err:
-        msg = (
-            f"vLLM server unreachable at {VLLM_BASE_URL}. "
-            f"Ensure start_vllm_uitars.sh is running and forwarded (e.g. ssh -L 8001:localhost:8000). Error: {err}"
-        )
-        print(f"[receiver] {msg}", flush=True)
+        body = await request.body()
+        if not body:
+            return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+
+        hint = request.query_params.get("name") or request.headers.get("X-Prompt") or ""
+        safe = "".join(c for c in hint if c.isalnum() or c in "-_.") or "screenshot"
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"{stamp}-{safe[:40]}.png"
+
+        (SCREENSHOTS_DIR / filename).write_bytes(body)
         return {
-            "success": False,
-            "error": msg,
-            "offline": True,
-        }
-    except Exception as err:
-        print(f"[receiver] Error calling UI-TARS: {err}", flush=True)
-        return {
-            "success": False,
-            "error": str(err),
-        }
-
-
-def query_chat(messages: list, prompt: str) -> dict:
-    """Send conversational text messages to vLLM (UI-TARS or served text model)."""
-    clean_prompt = prompt.strip() if prompt else ""
-
-    system_prompt = (
-        "You are V.A.R.M.A (Visual Autonomous Redaction & Multimodal Agent), an intelligent AI companion built into the user's browser. "
-        "You can chat casually, answer general knowledge and programming questions, and assist the user. "
-        "When the user asks about what is on their active page or screen, inform them you can inspect the page with vision anytime they want. "
-        "Keep your conversational responses helpful, friendly, natural, and concise."
-    )
-
-    formatted_messages = [{"role": "system", "content": system_prompt}]
-
-    if messages and isinstance(messages, list):
-        for msg in messages:
-            if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                formatted_messages.append({
-                    "role": msg["role"],
-                    "content": str(msg["content"]),
-                })
-    elif clean_prompt:
-        formatted_messages.append({"role": "user", "content": clean_prompt})
-
-    payload = {
-        "model": VLLM_MODEL,
-        "messages": formatted_messages,
-        "max_tokens": 1024,
-        "temperature": 0.7,
-    }
-
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        f"{VLLM_BASE_URL}/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-
-    print(f"[receiver] Dispatching chat to {VLLM_BASE_URL}/chat/completions...", flush=True)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            choices = data.get("choices", [])
-            if choices:
-                text = choices[0].get("message", {}).get("content", "")
-                return {
-                    "success": True,
-                    "response": text,
-                    "model": VLLM_MODEL,
-                }
-            return {
-                "success": False,
-                "error": "No completion choice returned by vLLM",
-            }
-    except urllib.error.URLError as err:
-        msg = f"vLLM server unreachable at {VLLM_BASE_URL}. Error: {err}"
-        print(f"[receiver] {msg}", flush=True)
-        return {
-            "success": False,
-            "error": msg,
-            "offline": True,
-            "response": (
-                "Hello! I am V.A.R.M.A, your browser AI companion. "
-                "I am currently in local standby because the vLLM server/SSH tunnel is disconnected. "
-                "To connect my full reasoning and UI-TARS vision capabilities, start your SSH tunnel (`ssh -p 2222 -L 8000:localhost:8000 vispl@103.89.8.32`)."
-            ),
-        }
-    except Exception as err:
-        print(f"[receiver] Error calling vLLM chat: {err}", flush=True)
-        return {
-            "success": False,
-            "error": str(err),
-            "response": f"Encountered an error communicating with the model: {err}",
-        }
-
-
-import re
-
-
-def extract_mouse_action(text: str, user_prompt: str) -> dict | None:
-    """Parse UI-TARS output or prompt for mouse click actions, typing, and coordinates."""
-    if not text:
-        text = ""
-
-    # 1. Check for text to type: Type: "..." or type(text='...')
-    text_to_type = None
-    type_match = re.search(r'(?:Type:\s*|type\s*\(\s*(?:text\s*=\s*)?)[\"\']([^\"\']+)[\"\']', text, re.IGNORECASE)
-    if type_match:
-        text_to_type = type_match.group(1).strip()
-
-    # Check for search query in prompt if not specified by UI-TARS
-    if not text_to_type:
-        search_prompt_match = re.search(r"\bsearch\s+(?:for\s+)?(.+)", user_prompt, re.IGNORECASE)
-        if search_prompt_match:
-            text_to_type = search_prompt_match.group(1).strip()
-
-    # 2. Extract Thought explanation to get a clear, human-friendly target name
-    target_name = None
-    thought_match = re.search(r"Thought:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if thought_match:
-        thought_line = thought_match.group(1).strip()
-        target_sub = re.search(r"(?:click|interact with|tap|select)\s+(?:on\s+)?(?:the\s+)?([^,\.;]+)", thought_line, re.IGNORECASE)
-        if target_sub:
-            target_name = target_sub.group(1).strip()[:50]
-        else:
-            target_name = thought_line[:50]
-
-    # 3. Match 4-coordinate bounding box: click(start_box='[y1, x1, y2, x2]') or '(y1, x1, y2, x2)'
-    box_match = re.search(
-        r"click\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[\]\)]['\"]?",
-        text,
-        re.IGNORECASE,
-    )
-    if box_match:
-        y1, x1, y2, x2 = map(int, box_match.groups())
-        cx = (x1 + x2) / 2
-        cy = (y1 + y2) / 2
-        return {
-            "type": "click",
-            "x": cx,
-            "y": cy,
-            "normalized": True,
-            "target": target_name or "Target Element",
-            "textToType": text_to_type,
-        }
-
-    # 4. Match 2-coordinate point: click(start_box='(275,314)') or click(point='(x, y)') or click(x, y)
-    pt_match = re.search(
-        r"click\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)[\]\)]['\"]?",
-        text,
-        re.IGNORECASE,
-    )
-    if pt_match:
-        val1, val2 = map(int, pt_match.groups())
-        # In UI-TARS notation, start_box=(ymin, xmin) -> val1=y, val2=x
-        is_point_keyword = bool(re.search(r"point\s*=", text[:pt_match.start() + 20], re.IGNORECASE))
-        if is_point_keyword:
-            x, y = val1, val2
-        else:
-            x, y = val2, val1
-
-        return {
-            "type": "click",
-            "x": x,
-            "y": y,
-            "normalized": x <= 1000 and y <= 1000,
-            "target": target_name or "Target Element",
-            "textToType": text_to_type,
-        }
-
-    # 5. Check if action contains move_to or hover
-    move_match = re.search(
-        r"(?:move_to|hover)\s*\(\s*(?:\w+\s*=\s*)?['\"]?[\[\(](\d+)\s*,\s*(\d+)[\]\)]['\"]?",
-        text,
-        re.IGNORECASE,
-    )
-    if move_match:
-        v1, v2 = map(int, move_match.groups())
-        return {
-            "type": "move",
-            "x": v2,
-            "y": v1,
-            "normalized": True,
-            "target": target_name or "Target Element",
-            "textToType": text_to_type,
-        }
-
-    # 6. Fallback based on user command if UI-TARS emitted an action or prompt is explicit
-    if re.search(r"\bsearch\b", user_prompt, re.IGNORECASE):
-        return {
-            "type": "click",
-            "target": "Search input",
-            "x": 580,
-            "y": 28,
-            "normalized": True,
-            "textToType": text_to_type,
-        }
-
-    click_intent = re.search(
-        r"\b(?:click|open|select|press|tap|choose|play|make\s+move|solve)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]{1,30})",
-        user_prompt,
-        re.IGNORECASE,
-    )
-    if click_intent:
-        target_name_fallback = target_name or click_intent.group(1).strip()
-        return {
-            "type": "click",
-            "target": target_name_fallback,
-            "x": 500,
-            "y": 350,
-            "normalized": True,
-            "textToType": text_to_type,
-        }
-
-    return None
-
-
-class ScreenshotHandler(BaseHTTPRequestHandler):
-    def _send_json(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_OPTIONS(self) -> None:
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Prompt, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.end_headers()
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path.startswith("/screenshots/"):
-            filename = os.path.basename(parsed.path)
-            filepath = os.path.join(SCREENSHOTS_DIR, filename)
-            if os.path.exists(filepath) and os.path.isfile(filepath):
-                try:
-                    with open(filepath, "rb") as f:
-                        content = f.read()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "image/png")
-                    self.send_header("Content-Length", str(len(content)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Cache-Control", "public, max-age=3600")
-                    self.end_headers()
-                    self.wfile.write(content)
-                    return
-                except Exception as err:
-                    self._send_json(500, {"ok": False, "error": str(err)})
-                    return
-            else:
-                self._send_json(404, {"ok": False, "error": "file not found"})
-                return
-
-        if parsed.path == "/health":
-            vllm_ok = check_vllm_health()
-            self._send_json(200, {
-                "status": "ok",
-                "screenshots_dir": SCREENSHOTS_DIR,
-                "vllm_base_url": VLLM_BASE_URL,
-                "vllm_model": VLLM_MODEL,
-                "vllm_reachable": vllm_ok,
-            })
-        else:
-            self._send_json(404, {"ok": False, "error": "not found"})
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path == "/chat":
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                data = json.loads(raw.decode("utf-8"))
-            except Exception:
-                data = {}
-            prompt = data.get("prompt", "")
-            messages = data.get("messages", [])
-            result = query_chat(messages, prompt)
-            self._send_json(200, {
-                "ok": result.get("success", False),
-                "response": result.get("response", ""),
-                "error": result.get("error"),
-                "offline": result.get("offline", False),
-                "model": result.get("model", VLLM_MODEL),
-            })
-            return
-
-        if parsed.path != "/screenshot":
-            self._send_json(404, {"ok": False, "error": "not found"})
-            return
-
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        data = self.rfile.read(length) if length else b""
-        if not data:
-            self._send_json(400, {"ok": False, "error": "empty body"})
-            return
-
-        os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-        qs = parse_qs(parsed.query)
-        hint = (qs.get("name", [None])[0]) or self.headers.get("X-Prompt")
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        if hint:
-            safe = "".join(c for c in hint if c.isalnum() or c in "-_.")
-            filename = f"{ts}-{safe[:40] or 'screenshot'}.png"
-        else:
-            filename = f"{ts}.png"
-
-        dest = os.path.join(SCREENSHOTS_DIR, filename)
-        with open(dest, "wb") as f:
-            f.write(data)
-
-        rel_path = os.path.join("screenshots", filename).replace("\\", "/")
-        print(f"[receiver] saved {len(data)} bytes -> {dest}", flush=True)
-
-        # Extract prompt for UI-TARS
-        prompt_raw = self.headers.get("X-Prompt")
-        if prompt_raw:
-            try:
-                user_prompt = unquote(prompt_raw)
-            except Exception:
-                user_prompt = prompt_raw
-        else:
-            user_prompt = hint or "Describe this webpage screenshot in a simplified way."
-
-        # Query UI-TARS via vLLM
-        vllm_result = query_uitars(data, user_prompt)
-        analysis_text = vllm_result.get("analysis", "")
-        mouse_action = extract_mouse_action(analysis_text, user_prompt)
-        if mouse_action:
-            print(f"[receiver] Mouse action detected: {mouse_action}", flush=True)
-
-        url = f"http://{HOST}:{PORT}/screenshots/{filename}"
-        self._send_json(200, {
             "ok": True,
-            "path": rel_path,
-            "url": url,
-            "absolute_path": dest,
-            "bytes": len(data),
-            "timestamp": ts,
-            "analysis": analysis_text,
-            "analysis_error": vllm_result.get("error"),
-            "vllm_status": "online" if vllm_result.get("success") else "offline",
-            "action": mouse_action,
-        })
-
-    def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("[receiver] " + (fmt % args) + "\n")
+            "path": f"screenshots/{filename}",
+            "url": f"http://{HOST}:{PORT}/screenshots/{filename}",
+            "bytes": len(body),
+            "timestamp": stamp,
+        }
+    except Exception as exc:  # pragma: no cover
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-def main() -> None:
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    server_address = (HOST, PORT)
+CHAT_SYSTEM_PROMPT = (
+    "You are V.A.R.M.A, an AI companion inside the user's browser. "
+    "Reply in the user's language, be direct and concise, and never emit XML tags "
+    "or special tokens."
+)
+
+
+@app.post("/chat")
+async def chat(request: Request) -> dict[str, Any]:
+    """Conversational reply. No page access, no browser control."""
     try:
-        httpd = ThreadingHTTPServer(server_address, ScreenshotHandler)
-    except OSError as err:
-        print(f"[receiver] Port {PORT} is already in use (receiver may already be running): {err}", flush=True)
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid JSON", "response": "I couldn't read that request."}
+
+    messages = data.get("messages") or []
+    if not messages and data.get("prompt"):
+        messages = [{"role": "user", "content": data["prompt"]}]
+
+    if not vllm_reachable():
+        return {
+            "ok": False,
+            "offline": True,
+            "error": "vLLM backend is unreachable.",
+            "response": (
+                "I'm in local standby because the vLLM server is disconnected. "
+                "Start the tunnel (ssh -L 8000:localhost:8000 ...) and try again."
+            ),
+            "model": llm.model,
+        }
+
+    try:
+        model = await llm.resolve_model(VLLM_MODEL)
+        full = normalize_messages([{"role": "system", "content": CHAT_SYSTEM_PROMPT}] + messages)
+        result = await llm.chat(full, max_tokens=1024, temperature=0.3)
+        reply = clean_model_response(result.get("text", ""))
+        if not reply:
+            reply = "I received your message but couldn't generate a response. Please try again."
+        return {"ok": True, "response": reply, "model": model, "usage": result.get("usage")}
+    except VLLMError as exc:
+        return {"ok": False, "error": str(exc), "response": f"Model error: {exc}"}
+    except Exception as exc:  # pragma: no cover
+        return {"ok": False, "error": str(exc), "response": f"Unexpected error: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Agent websocket
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/agent")
+async def agent_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    if not vllm_reachable():
+        await websocket.send_json(
+            {
+                "type": "ERROR",
+                "error": (
+                    f"Cannot reach vLLM at {VLLM_BASE_URL}. Start the tunnel: "
+                    "ssh -L 8000:localhost:8000 user@gpu-host"
+                ),
+            }
+        )
+        await websocket.close()
         return
 
-    print(f"[receiver] Listening on http://{HOST}:{PORT}/screenshot", flush=True)
-    print(f"[receiver] Storing screenshots to: {SCREENSHOTS_DIR}", flush=True)
+    if not cdp_reachable():
+        await websocket.send_json(
+            {
+                "type": "ERROR",
+                "error": (
+                    f"Cannot reach the browser on {CDP_URL}. Start Chrome/Brave with "
+                    "--remote-debugging-port=9222 --user-data-dir=<profile>"
+                ),
+            }
+        )
+        await websocket.close()
+        return
+
+    loop: AgentLoop | None = None
+
     try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[receiver] Stopping server...", flush=True)
+        init = await websocket.receive_json()
+        if init.get("type") != "START_TASK":
+            await websocket.send_json({"type": "ERROR", "error": "Expected START_TASK"})
+            return
+
+        task = str(init.get("task", "")).strip()
+        if not task:
+            await websocket.send_json({"type": "ERROR", "error": "Empty task"})
+            return
+
+        max_steps = int(init.get("max_steps") or MAX_STEPS)
+
+        # The side panel's settings decide the visual debug layer. Apply before
+        # the run starts so the first perception already draws correctly.
+        await session.apply_visuals(
+            overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
+            cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
+        )
+
+        async def emit(event: dict[str, Any]) -> None:
+            await websocket.send_json(event)
+
+        await llm.resolve_model(VLLM_MODEL)
+        loop = AgentLoop(session, llm, on_event=emit)
+        config = AgentRunConfig(
+            task=task,
+            max_steps=max_steps,
+            max_actions_per_step=MAX_ACTIONS_PER_STEP,
+        )
+
+        async def listen() -> None:
+            """Handle STOP and live visual toggles while the agent runs."""
+            try:
+                while True:
+                    msg = await websocket.receive_json()
+                    kind = msg.get("type")
+                    if kind == "STOP" and loop is not None:
+                        loop.stop()
+                    elif kind == "SET_VISUALS":
+                        applied = await session.apply_visuals(
+                            overlay=msg.get("overlay"),
+                            cursor=msg.get("cursor"),
+                        )
+                        # Re-draw immediately so toggling on mid-run is visible.
+                        if applied.get("overlay") and loop is not None:
+                            await session.observe()
+            except (WebSocketDisconnect, asyncio.CancelledError):
+                if loop is not None:
+                    loop.stop()
+            except Exception:
+                pass
+
+        listener = asyncio.create_task(listen())
+        try:
+            await loop.run(config)
+        finally:
+            listener.cancel()
+            try:
+                await listener
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                pass
+
+    except WebSocketDisconnect:
+        if loop is not None:
+            loop.stop()
+    except CDPUnavailable as exc:
+        await _safe_send(websocket, {"type": "ERROR", "error": str(exc)})
+    except Exception as exc:  # pragma: no cover
+        import traceback
+
+        traceback.print_exc()
+        await _safe_send(websocket, {"type": "ERROR", "error": str(exc)})
+
+
+async def _safe_send(websocket: WebSocket, payload: dict[str, Any]) -> None:
+    try:
+        await websocket.send_json(payload)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
