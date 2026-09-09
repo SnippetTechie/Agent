@@ -56,6 +56,19 @@ export interface SpeechController {
   stop(): void;
 }
 
+/**
+ * Opens the mic-permission page as a real browser tab so Chrome can show its
+ * microphone prompt at all — side panels/popups never surface it (the
+ * getUserMedia() call there resolves as silently dismissed, no dialog shown,
+ * on any protocol). The grant applies to this extension's whole origin, so
+ * once accepted there, SpeechRecognition works from the side panel without
+ * asking again.
+ */
+export function openMicPermissionTab(): void {
+  if (typeof chrome === "undefined" || !chrome.tabs?.create || !chrome.runtime?.getURL) return;
+  void chrome.tabs.create({ url: chrome.runtime.getURL("src/sidepanel/mic-permission.html") });
+}
+
 export function startSpeechRecognition(opts: {
   lang: LanguageCode;
   onTranscript: (transcript: string) => void;

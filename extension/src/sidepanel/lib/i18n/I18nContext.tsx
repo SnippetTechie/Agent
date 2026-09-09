@@ -36,7 +36,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     loadState<LanguageCode>(LANG_STORAGE_KEY).then((saved) => {
-      if (!cancelled && saved && saved in TRANSLATIONS) setLangState(saved);
+      if (!cancelled && saved && saved in TRANSLATIONS) {
+        setLangState(saved);
+        // Restore <html lang> so :lang() CSS font rules apply immediately
+        // on panel open without waiting for a user interaction.
+        document.documentElement.lang = saved;
+      }
     });
     return () => {
       cancelled = true;
@@ -45,6 +50,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLang = useCallback((l: LanguageCode) => {
     setLangState(l);
+    // Update <html lang> so the :lang() CSS rules in index.css switch the
+    // Indic font family instantly — no class threading needed anywhere.
+    document.documentElement.lang = l;
     void saveState(LANG_STORAGE_KEY, l);
   }, []);
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Camera, Globe, MessageSquare, Mic, ShieldCheck, ShieldOff, Sparkles, Square } from "lucide-react";
 import type { ApprovalMode, ContextMode, TabContext } from "../types.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
-import { isSpeechRecognitionSupported, startSpeechRecognition, type SpeechController } from "../lib/speech.js";
+import { isSpeechRecognitionSupported, openMicPermissionTab, startSpeechRecognition, type SpeechController } from "../lib/speech.js";
 import { isPageContextRequested } from "../lib/intent.js";
 import { ApprovalModeMenu } from "./ApprovalModeMenu.js";
 
@@ -28,6 +28,7 @@ export function InputDock({
   const [contextMode, setContextMode] = useState<ContextMode>("auto");
   const [autoRedact, setAutoRedact] = useState(true);
   const [listening, setListening] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const dictationBaseRef = useRef("");
@@ -68,6 +69,7 @@ export function InputDock({
       speechRef.current?.stop();
       return;
     }
+    setMicError(null);
     dictationBaseRef.current = value;
     const controller = startSpeechRecognition({
       lang,
@@ -80,14 +82,30 @@ export function InputDock({
         setListening(false);
         speechRef.current = null;
       },
-      onError: () => {
+      onError: (err) => {
         setListening(false);
         speechRef.current = null;
+        if (err === "not-allowed" || err === "service-not-allowed") {
+          // Side panels/popups never show Chrome's mic prompt — it's
+          // silently dismissed on any protocol. Open a real tab so the
+          // prompt actually appears; the grant then covers this
+          // extension's whole origin, side panel included.
+          openMicPermissionTab();
+          setMicError("Opening a tab to grant microphone access — allow it there, then try the mic again.");
+        } else if (err === "network") {
+          setMicError("Network error — speech service unreachable.");
+        } else if (err === "no-speech") {
+          setMicError(null); // silent timeout, not a real error
+        } else {
+          setMicError(`Mic error: ${err}`);
+        }
       },
     });
     if (controller) {
       speechRef.current = controller;
       setListening(true);
+    } else {
+      setMicError("Speech recognition not supported in this browser.");
     }
   };
 
@@ -96,6 +114,12 @@ export function InputDock({
   return (
     <div className="shrink-0 px-3 pb-3 pt-2">
       <div className="rounded-2xl border border-varma-border bg-varma-surface px-3 pb-2 pt-2.5 transition-colors focus-within:border-varma-border-strong">
+        {micError && (
+          <div className="mb-2 flex items-start gap-1.5 rounded-lg border border-varma-redact/30 bg-varma-redact/10 px-2.5 py-1.5 text-[11px] text-varma-redact">
+            <Mic className="mt-px h-3 w-3 shrink-0" />
+            <span>{micError}</span>
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
