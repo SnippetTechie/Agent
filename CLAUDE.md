@@ -35,9 +35,10 @@ Every architectural and coding decision must optimize for these 5 exact scoring 
 
 ### B. Server-Side (High-Level Reasoning & Action Generation)
 * **Host:** Local workstation during development; cloud or offline-deployable open-weights host for hackathon evaluation.
-* **Model Stack:** Open-weights Vision-Language Models (e.g., Qwen2-VL, Llama-3.2-Vision) or local reasoning LLMs.
-* **Payload:** Receives ONLY the sanitized visual buffer + structural semantic tags. Never raw frames or raw un-redacted DOM trees.
-* **Output:** Structured JSON schema commands (`action: "click" | "type" | "scroll"`, `target_id`, `coordinates`, `completion_status`).
+* **Model Stack:** Gnani Evon v3.3-30B-A3B multilingual MoE LLM (supports English + 10 Indic languages) served via vLLM with OpenAI-compatible API.
+* **Browser Automation:** browser-use framework (Playwright-based) controlling Chrome via Chrome DevTools Protocol (CDP). Uses DOM extraction / accessibility tree for page understanding (not screenshots).
+* **Communication:** FastAPI WebSocket server streaming step-by-step agent progress. Extension connects via `ws://127.0.0.1:8002/ws/agent`.
+* **Output:** Structured browser actions (click, type, scroll, navigate) executed natively by Playwright, with approval gates for risky actions.
 
 ---
 

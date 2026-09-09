@@ -26,6 +26,15 @@ export interface Translations {
     language: string;
     mute: string;
     unmute: string;
+    tabScope: string;
+    tabScopeSingle: string;
+    tabScopeAll: string;
+    visuals: string;
+    visualsBoxes: string;
+    visualsCursor: string;
+    visualsRedact: string;
+    on: string;
+    off: string;
   };
   context: {
     noActiveTab: string;
@@ -82,6 +91,11 @@ export interface Translations {
     deny: string;
     approvedNote: string;
     deniedNote: string;
+    expiredNote: string;
+    autoNote: string;
+    autoApprovedNote: string;
+    stepLabel: string;
+    expiresIn: string;
   };
   summary: {
     completedWithMasks: string;
@@ -129,6 +143,15 @@ const en: Translations = {
     language: "Language",
     mute: "Mute sounds",
     unmute: "Unmute sounds",
+    tabScope: "Tab access scope",
+    tabScopeSingle: "Current tab only",
+    tabScopeAll: "All tabs",
+    visuals: "On-page visuals",
+    visualsBoxes: "Bounding boxes",
+    visualsCursor: "Agent cursor",
+    visualsRedact: "Auto-redact PII",
+    on: "on",
+    off: "off",
   },
   context: {
     noActiveTab: "No active tab",
@@ -186,6 +209,11 @@ const en: Translations = {
     deny: "Deny",
     approvedNote: "Approved — action executed.",
     deniedNote: "Denied — action was not taken.",
+    expiredNote: "This request timed out before a decision was made.",
+    autoNote: "Auto-approving in a moment — switch to Manual to review each step.",
+    autoApprovedNote: "Auto-approved — action executed.",
+    stepLabel: "Step {n}",
+    expiresIn: "expires in {n}s",
   },
   summary: {
     completedWithMasks:
@@ -237,7 +265,15 @@ const hi: Translations = {
     language: "भाषा",
     mute: "ध्वनि म्यूट करें",
     unmute: "ध्वनि चालू करें",
-  },
+    tabScope: "टैब एक्सेस सीमा",
+    tabScopeSingle: "केवल वर्तमान टैब",
+    tabScopeAll: "सभी टैब",
+    visuals: "पेज पर दृश्य",
+    visualsBoxes: "बाउंडिंग बॉक्स",
+    visualsCursor: "एजेंट कर्सर",
+    visualsRedact: "PII स्वतः मास्क करें",
+    on: "चालू",
+    off: "बंद",  },
   context: {
     noActiveTab: "कोई सक्रिय टैब नहीं",
   },
@@ -294,6 +330,11 @@ const hi: Translations = {
     deny: "अस्वीकार करें",
     approvedNote: "स्वीकृत — एक्शन निष्पादित हुआ।",
     deniedNote: "अस्वीकृत — कुछ भी सबमिट नहीं किया गया।",
+    expiredNote: "निर्णय लेने से पहले यह अनुरोध समय-समाप्त हो गया।",
+    autoNote: "कुछ क्षण में स्वतः स्वीकृत — हर चरण की समीक्षा हेतु मैनुअल चुनें।",
+    autoApprovedNote: "स्वतः स्वीकृत — एक्शन निष्पादित हुआ।",
+    stepLabel: "चरण {n}",
+    expiresIn: "{n}सेकंड में समाप्त",
   },
   summary: {
     completedWithMasks:
@@ -344,7 +385,15 @@ const gu: Translations = {
     language: "ભાષા",
     mute: "અવાજ મ્યૂટ કરો",
     unmute: "અવાજ ચાલુ કરો",
-  },
+    tabScope: "ટૅબ ઍક્સેસ સીમા",
+    tabScopeSingle: "ફક્ત વર્તમાન ટૅબ",
+    tabScopeAll: "બધા ટૅબ",
+    visuals: "પૃષ્ઠ પર દૃશ્યો",
+    visualsBoxes: "બાઉન્ડિંગ બોક્સ",
+    visualsCursor: "એજન્ટ કર્સર",
+    visualsRedact: "PII સ્વયં માસ્ક કરો",
+    on: "ચાલુ",
+    off: "બંધ",  },
   context: {
     noActiveTab: "કોઈ સક્રિય ટેબ નથી",
   },
@@ -401,6 +450,11 @@ const gu: Translations = {
     deny: "નકારો",
     approvedNote: "મંજૂર — એક્શન એક્ઝિક્યુટ થયું.",
     deniedNote: "નકારેલ — કંઈ સબમિટ કરાયું નથી.",
+    expiredNote: "નિર્ણય લેતા પહેલાં આ વિનંતીનો સમય પૂરો થઈ ગયો.",
+    autoNote: "થોડી વારમાં સ્વયં મંજૂર — દરેક પગલું સમીક્ષા માટે મેન્યુઅલ પસંદ કરો.",
+    autoApprovedNote: "સ્વયં મંજૂર — એક્શન એક્ઝિક્યુટ થયું.",
+    stepLabel: "પગલું {n}",
+    expiresIn: "{n}સેકંડમાં સમાપ્ત",
   },
   summary: {
     completedWithMasks:
@@ -452,7 +506,15 @@ const mr: Translations = {
     language: "भाषा",
     mute: "आवाज म्यूट करा",
     unmute: "आवाज सुरू करा",
-  },
+    tabScope: "टॅब प्रवेश मर्यादा",
+    tabScopeSingle: "फक्त सध्याचा टॅब",
+    tabScopeAll: "सर्व टॅब",
+    visuals: "पृष्ठावरील दृश्ये",
+    visualsBoxes: "बाउंडिंग बॉक्स",
+    visualsCursor: "एजंट कर्सर",
+    visualsRedact: "PII स्वयं-मास्क करा",
+    on: "चालू",
+    off: "बंद",  },
   context: {
     noActiveTab: "कोणतेही सक्रिय टॅब नाही",
   },
@@ -509,6 +571,11 @@ const mr: Translations = {
     deny: "नाकारा",
     approvedNote: "मंजूर — अ‍ॅक्शन एक्झिक्यूट झाले.",
     deniedNote: "नाकारले — काहीही सबमिट केले गेले नाही.",
+    expiredNote: "निर्णय घेण्यापूर्वी या विनंतीची वेळ संपली.",
+    autoNote: "काही क्षणात स्वयं-मंजूर — प्रत्येक पायरी तपासण्यासाठी मॅन्युअल निवडा.",
+    autoApprovedNote: "स्वयं-मंजूर — अ‍ॅक्शन एक्झिक्यूट झाले.",
+    stepLabel: "पायरी {n}",
+    expiresIn: "{n}सेकंदात संपेल",
   },
   summary: {
     completedWithMasks:
@@ -560,7 +627,15 @@ const kn: Translations = {
     language: "ಭಾಷೆ",
     mute: "ಧ್ವನಿ ಮ್ಯೂಟ್ ಮಾಡಿ",
     unmute: "ಧ್ವನಿ ಆನ್ ಮಾಡಿ",
-  },
+    tabScope: "ಟ್ಯಾಬ್ ಪ್ರವೇಶ ವ್ಯಾಪ್ತಿ",
+    tabScopeSingle: "ಪ್ರಸ್ತುತ ಟ್ಯಾಬ್ ಮಾತ್ರ",
+    tabScopeAll: "ಎಲ್ಲಾ ಟ್ಯಾಬ್‌ಗಳು",
+    visuals: "ಪುಟದ ದೃಶ್ಯಗಳು",
+    visualsBoxes: "ಬೌಂಡಿಂಗ್ ಬಾಕ್ಸ್",
+    visualsCursor: "ಏಜೆಂಟ್ ಕರ್ಸರ್",
+    visualsRedact: "PII ಸ್ವಯಂ-ಮಾಸ್ಕ್ ಮಾಡಿ",
+    on: "ಆನ್",
+    off: "ಆಫ್",  },
   context: {
     noActiveTab: "ಯಾವುದೇ ಸಕ್ರಿಯ ಟ್ಯಾಬ್ ಇಲ್ಲ",
   },
@@ -617,6 +692,11 @@ const kn: Translations = {
     deny: "ನಿರಾಕರಿಸಿ",
     approvedNote: "ಅನುಮೋದಿಸಲಾಗಿದೆ — ಆಕ್ಷನ್ ಕಾರ್ಯಗತಗೊಂಡಿದೆ.",
     deniedNote: "ನಿರಾಕರಿಸಲಾಗಿದೆ — ಏನನ್ನೂ ಸಲ್ಲಿಸಲಾಗಿಲ್ಲ.",
+    expiredNote: "ನಿರ್ಧಾರ ತೆಗೆದುಕೊಳ್ಳುವ ಮೊದಲು ಈ ವಿನಂತಿಯ ಸಮಯ ಮುಗಿಯಿತು.",
+    autoNote: "ಸ್ವಲ್ಪ ಸಮಯದಲ್ಲಿ ಸ್ವಯಂ-ಅನುಮೋದನೆ — ಪ್ರತಿ ಹಂತವನ್ನೂ ಪರಿಶೀಲಿಸಲು ಮ್ಯಾನ್ಯುಯಲ್ ಆಯ್ಕೆಮಾಡಿ.",
+    autoApprovedNote: "ಸ್ವಯಂ-ಅನುಮೋದಿಸಲಾಗಿದೆ — ಆಕ್ಷನ್ ಕಾರ್ಯಗತಗೊಂಡಿದೆ.",
+    stepLabel: "ಹಂತ {n}",
+    expiresIn: "{n}ಸೆಕೆಂಡ್‌ಗಳಲ್ಲಿ ಮುಗಿಯುತ್ತದೆ",
   },
   summary: {
     completedWithMasks:
@@ -668,7 +748,15 @@ const ml: Translations = {
     language: "ഭാഷ",
     mute: "ശബ്ദം മ്യൂട്ട് ചെയ്യുക",
     unmute: "ശബ്ദം ഓണാക്കുക",
-  },
+    tabScope: "ടാബ് ആക്സസ് പരിധി",
+    tabScopeSingle: "നിലവിലെ ടാബ് മാത്രം",
+    tabScopeAll: "എല്ലാ ടാബുകളും",
+    visuals: "പേജിലെ ദൃശ്യങ്ങൾ",
+    visualsBoxes: "ബൗണ്ടിംഗ് ബോക്സുകൾ",
+    visualsCursor: "ഏജന്റ് കഴ്സർ",
+    visualsRedact: "PII സ്വയം മാസ്ക് ചെയ്യുക",
+    on: "ഓൺ",
+    off: "ഓഫ്",  },
   context: {
     noActiveTab: "സജീവ ടാബ് ഇല്ല",
   },
@@ -725,6 +813,11 @@ const ml: Translations = {
     deny: "നിരസിക്കുക",
     approvedNote: "അംഗീകരിച്ചു — ആക്ഷൻ നടപ്പിലാക്കി.",
     deniedNote: "നിരസിച്ചു — ഒന്നും സമർപ്പിച്ചിട്ടില്ല.",
+    expiredNote: "തീരുമാനം എടുക്കുന്നതിന് മുമ്പ് ഈ അഭ്യർത്ഥനയുടെ സമയം കഴിഞ്ഞു.",
+    autoNote: "അൽപ്പസമയത്തിനുള്ളിൽ സ്വയം അംഗീകരിക്കും — ഓരോ ഘട്ടവും പരിശോധിക്കാൻ മാനുവൽ തിരഞ്ഞെടുക്കുക.",
+    autoApprovedNote: "സ്വയം അംഗീകരിച്ചു — ആക്ഷൻ നടപ്പിലാക്കി.",
+    stepLabel: "ഘട്ടം {n}",
+    expiresIn: "{n}സെക്കൻഡിൽ അവസാനിക്കും",
   },
   summary: {
     completedWithMasks:
@@ -776,7 +869,15 @@ const ta: Translations = {
     language: "மொழி",
     mute: "ஒலியை நிறுத்து",
     unmute: "ஒலியை இயக்கு",
-  },
+    tabScope: "தாவல் அணுகல் வரம்பு",
+    tabScopeSingle: "தற்போதைய தாவல் மட்டும்",
+    tabScopeAll: "எல்லா தாவல்களும்",
+    visuals: "பக்க காட்சிகள்",
+    visualsBoxes: "எல்லைப் பெட்டிகள்",
+    visualsCursor: "முகவர் கர்சர்",
+    visualsRedact: "PII தானாக மறை",
+    on: "இயக்கம்",
+    off: "நிறுத்தம்",  },
   context: {
     noActiveTab: "செயலில் உள்ள தாவல் இல்லை",
   },
@@ -833,6 +934,11 @@ const ta: Translations = {
     deny: "மறு",
     approvedNote: "அங்கீகரிக்கப்பட்டது — செயல் செயல்படுத்தப்பட்டது.",
     deniedNote: "மறுக்கப்பட்டது — எதுவும் சமர்ப்பிக்கப்படவில்லை.",
+    expiredNote: "முடிவெடுப்பதற்கு முன்பே இந்தக் கோரிக்கையின் நேரம் முடிந்தது.",
+    autoNote: "சிறிது நேரத்தில் தானாக அங்கீகரிக்கப்படும் — ஒவ்வொரு படியையும் சரிபார்க்க கைமுறையைத் தேர்ந்தெடுக்கவும்.",
+    autoApprovedNote: "தானாக அங்கீகரிக்கப்பட்டது — செயல் செயல்படுத்தப்பட்டது.",
+    stepLabel: "படி {n}",
+    expiresIn: "{n}விநாடிகளில் முடிவடையும்",
   },
   summary: {
     completedWithMasks:
@@ -884,7 +990,15 @@ const te: Translations = {
     language: "భాష",
     mute: "శబ్దాన్ని మ్యూట్ చేయి",
     unmute: "శబ్దాన్ని ఆన్ చేయి",
-  },
+    tabScope: "ట్యాబ్ యాక్సెస్ పరిధి",
+    tabScopeSingle: "ప్రస్తుత ట్యాబ్ మాత్రమే",
+    tabScopeAll: "అన్ని ట్యాబ్‌లు",
+    visuals: "పేజీ దృశ్యాలు",
+    visualsBoxes: "బౌండింగ్ బాక్స్‌లు",
+    visualsCursor: "ఏజెంట్ కర్సర్",
+    visualsRedact: "PII స్వయంగా మాస్క్ చేయి",
+    on: "ఆన్",
+    off: "ఆఫ్",  },
   context: {
     noActiveTab: "యాక్టివ్ ట్యాబ్ లేదు",
   },
@@ -941,6 +1055,11 @@ const te: Translations = {
     deny: "తిరస్కరించు",
     approvedNote: "ఆమోదించబడింది — యాక్షన్ అమలు చేయబడింది.",
     deniedNote: "తిరస్కరించబడింది — ఏమీ సమర్పించబడలేదు.",
+    expiredNote: "నిర్ణయం తీసుకునే ముందే ఈ అభ్యర్థన సమయం ముగిసింది.",
+    autoNote: "కొద్దిసేపట్లో స్వయంగా ఆమోదించబడుతుంది — ప్రతి దశను సమీక్షించడానికి మాన్యువల్ ఎంచుకోండి.",
+    autoApprovedNote: "స్వయంగా ఆమోదించబడింది — యాక్షన్ అమలు చేయబడింది.",
+    stepLabel: "దశ {n}",
+    expiresIn: "{n}సెకన్లలో ముగుస్తుంది",
   },
   summary: {
     completedWithMasks:
@@ -992,7 +1111,15 @@ const or_: Translations = {
     language: "ଭାଷା",
     mute: "ଶବ୍ଦ ମ୍ୟୁଟ୍ କରନ୍ତୁ",
     unmute: "ଶବ୍ଦ ଚାଲୁ କରନ୍ତୁ",
-  },
+    tabScope: "ଟ୍ୟାବ୍ ଆକ୍ସେସ୍ ସୀମା",
+    tabScopeSingle: "କେବଳ ବର୍ତ୍ତମାନ ଟ୍ୟାବ୍",
+    tabScopeAll: "ସମସ୍ତ ଟ୍ୟାବ୍",
+    visuals: "ପୃଷ୍ଠା ଦୃଶ୍ୟ",
+    visualsBoxes: "ବାଉଣ୍ଡିଂ ବକ୍ସ",
+    visualsCursor: "ଏଜେଣ୍ଟ କର୍ସର",
+    visualsRedact: "PII ସ୍ୱଚାଳିତ ମାସ୍କ",
+    on: "ଚାଲୁ",
+    off: "ବନ୍ଦ",  },
   context: {
     noActiveTab: "କୌଣସି ସକ୍ରିୟ ଟ୍ୟାବ୍ ନାହିଁ",
   },
@@ -1049,6 +1176,11 @@ const or_: Translations = {
     deny: "ପ୍ରତ୍ୟାଖ୍ୟାନ କରନ୍ତୁ",
     approvedNote: "ଅନୁମୋଦିତ — ଆକ୍ସନ୍ ନିଷ୍ପାଦିତ ହେଲା।",
     deniedNote: "ପ୍ରତ୍ୟାଖ୍ୟାନ କରାଗଲା — କିଛି ଦାଖଲ ହେଲା ନାହିଁ।",
+    expiredNote: "ନିଷ୍ପତ୍ତି ନେବା ପୂର୍ବରୁ ଏହି ଅନୁରୋଧର ସମୟ ଶେଷ ହୋଇଗଲା।",
+    autoNote: "କିଛି କ୍ଷଣରେ ସ୍ୱଚାଳିତ ଅନୁମୋଦନ — ପ୍ରତ୍ୟେକ ପଦକ୍ଷେପ ସମୀକ୍ଷା ପାଇଁ ମାନୁଆଲ୍ ବାଛନ୍ତୁ।",
+    autoApprovedNote: "ସ୍ୱଚାଳିତ ଅନୁମୋଦିତ — ଆକ୍ସନ୍ ନିଷ୍ପାଦିତ ହେଲା।",
+    stepLabel: "ପଦକ୍ଷେପ {n}",
+    expiresIn: "{n}ସେକେଣ୍ଡରେ ଶେଷ ହେବ",
   },
   summary: {
     completedWithMasks:
@@ -1100,7 +1232,15 @@ const bn: Translations = {
     language: "ভাষা",
     mute: "শব্দ মিউট করুন",
     unmute: "শব্দ চালু করুন",
-  },
+    tabScope: "ট্যাব অ্যাক্সেস সীমা",
+    tabScopeSingle: "শুধু বর্তমান ট্যাব",
+    tabScopeAll: "সব ট্যাব",
+    visuals: "পৃষ্ঠার দৃশ্য",
+    visualsBoxes: "বাউন্ডিং বক্স",
+    visualsCursor: "এজেন্ট কার্সর",
+    visualsRedact: "PII স্বয়ংক্রিয়ভাবে মাস্ক করুন",
+    on: "চালু",
+    off: "বন্ধ",  },
   context: {
     noActiveTab: "কোনো সক্রিয় ট্যাব নেই",
   },
@@ -1157,6 +1297,11 @@ const bn: Translations = {
     deny: "প্রত্যাখ্যান করুন",
     approvedNote: "অনুমোদিত — অ্যাকশন কার্যকর হয়েছে।",
     deniedNote: "প্রত্যাখ্যাত — কিছুই জমা দেওয়া হয়নি।",
+    expiredNote: "সিদ্ধান্ত নেওয়ার আগেই এই অনুরোধের সময় শেষ হয়ে গেছে।",
+    autoNote: "কিছুক্ষণেই স্বয়ংক্রিয় অনুমোদন — প্রতিটি ধাপ পর্যালোচনার জন্য ম্যানুয়াল বেছে নিন।",
+    autoApprovedNote: "স্বয়ংক্রিয়ভাবে অনুমোদিত — অ্যাকশন কার্যকর হয়েছে।",
+    stepLabel: "ধাপ {n}",
+    expiresIn: "{n}সেকেন্ডে শেষ হবে",
   },
   summary: {
     completedWithMasks:

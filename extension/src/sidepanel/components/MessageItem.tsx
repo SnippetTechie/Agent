@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Bot, LoaderCircle } from "lucide-react";
 import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
@@ -13,7 +14,7 @@ const SUMMARY_TONE: Record<AgentTurn["status"], string> = {
   error: "border-varma-redact/25 bg-varma-redact/[0.06] text-varma-text",
 };
 
-export function MessageItem({
+function MessageItemInner({
   turn,
   onApprove,
   onDeny,
@@ -57,7 +58,8 @@ export function MessageItem({
   }
 
   const hasAnalysis = !!turn.analysis;
-  const showSummary = !hasAnalysis && turn.summary && turn.status !== "running" && turn.status !== "awaiting-approval";
+  const showSummary =
+    !hasAnalysis && turn.summary && turn.status !== "running" && turn.status !== "awaiting-approval";
 
   return (
     <div className="animate-varma-rise space-y-2">
@@ -68,14 +70,11 @@ export function MessageItem({
       </div>
 
       <div className="flex max-w-[92%] flex-col gap-2">
-        <ActionCard turn={turn} screenshot={turn.screenshot} />
-        {hasAnalysis && (
-          <VlmAnalysisCard
-            analysis={turn.analysis}
-            error={turn.screenshot?.analysisError}
-          />
+        <ActionCard turn={turn} />
+        {hasAnalysis && <VlmAnalysisCard analysis={turn.analysis} />}
+        {turn.approval && (
+          <ConfirmationBanner approval={turn.approval} onApprove={onApprove} onDeny={onDeny} />
         )}
-        {turn.approval && <ConfirmationBanner approval={turn.approval} onApprove={onApprove} onDeny={onDeny} />}
         {showSummary && (
           <div
             className={`animate-varma-rise rounded-2xl rounded-tl-sm border px-3.5 py-2 text-[13px] leading-relaxed ${SUMMARY_TONE[turn.status]}`}
@@ -87,3 +86,9 @@ export function MessageItem({
     </div>
   );
 }
+
+/**
+ * Memoized: a running task re-renders the whole feed on every streamed event,
+ * but only the active turn's object identity actually changes.
+ */
+export const MessageItem = memo(MessageItemInner);

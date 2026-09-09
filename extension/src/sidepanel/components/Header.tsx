@@ -1,6 +1,8 @@
 import { History, SquarePen } from "lucide-react";
 import { HeaderMenu } from "./HeaderMenu.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
+import type { VisualSettings } from "../hooks/useVisualSettings.js";
+import type { TabScope } from "../types.js";
 
 /**
  * Chrome's own side-panel title strip already shows the extension name,
@@ -12,9 +14,17 @@ import { useI18n } from "../lib/i18n/I18nContext.js";
 export function Header({
   onClearSession,
   onToggleAuditLog,
+  visuals,
+  updateVisuals,
+  tabScope,
+  setTabScope,
 }: {
   onClearSession: () => void;
   onToggleAuditLog: () => void;
+  visuals: VisualSettings;
+  updateVisuals: (patch: Partial<VisualSettings>) => void;
+  tabScope: TabScope;
+  setTabScope: (scope: TabScope) => void;
 }) {
   const { t } = useI18n();
 
@@ -36,7 +46,12 @@ export function Header({
       >
         <SquarePen className="h-4 w-4" />
       </button>
-      <HeaderMenu />
+      <HeaderMenu
+        visuals={visuals}
+        updateVisuals={updateVisuals}
+        tabScope={tabScope}
+        setTabScope={setTabScope}
+      />
     </header>
   );
 }
