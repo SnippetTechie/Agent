@@ -456,15 +456,23 @@ async function captureFullPageScreenshot(): Promise<FullPageCaptureResult> {
 
 /**
  * Capture the full tab page and send the screenshot directly to the local receiver.
- * `prompt` is sanitized and used as the filename hint.
+ * `prompt` is sanitized and used as the filename hint. `signal` (the same
+ * AbortController driving the turn's step timers) lets the Stop button
+ * actually interrupt this call — without it, clicking Stop while this is
+ * in flight (scrolling capture, then up to ~90s waiting on the vLLM
+ * response inside receiver.py) does nothing until it finishes on its own.
  */
-export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureResult> {
+export async function captureAndSaveScreenshot(prompt: string, signal?: AbortSignal): Promise<CaptureResult> {
   if (typeof chrome === "undefined" || !chrome.tabs?.captureVisibleTab) {
     return {
       ok: false,
       dataUrl: "",
       error: "Capture unavailable outside extension context",
     };
+  }
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
   }
 
   let captureRes: FullPageCaptureResult;
@@ -496,6 +504,7 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
         "X-Prompt": encodeURIComponent(prompt),
       },
       body: blob,
+      signal,
     });
 
     if (!res.ok) {
@@ -538,6 +547,9 @@ export async function captureAndSaveScreenshot(prompt: string): Promise<CaptureR
       action: json.action,
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
     return {
       ok: false,
       dataUrl: fullDataUrl,

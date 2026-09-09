@@ -299,7 +299,7 @@ export function useAgentSession(approvalMode: ApprovalMode, persistEnabled: bool
           // work: grab one screenshot of the active tab and save it to
           // the screenshots folder via chrome.downloads.
           if (i === 0) {
-            const result = await captureAndSaveScreenshot(turn.prompt);
+            const result = await captureAndSaveScreenshot(turn.prompt, signal);
             detectedAction = result.action;
             // Attach the real screenshot + save status + UI-TARS analysis + mouse action to the turn.
             updateTurn(turn.id, {
