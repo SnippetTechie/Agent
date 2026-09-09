@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
@@ -62,6 +62,12 @@ class BrowserSessionManager:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._lock = asyncio.Lock()
+
+        # Set by AgentLoop.run() to its own stop() before each run, so the
+        # on-page "Stop V.A.R.M.A" pill (dom.STOP_PILL_SCRIPT) halts the same
+        # way the side panel's own stop button does.
+        self.on_stop_requested: Callable[[], None] | None = None
+        self._stop_control_page: Page | None = None
 
         # Rolling timings, surfaced in /health and step events.
         self.last_observe_ms: float = 0.0
@@ -118,9 +124,30 @@ class BrowserSessionManager:
 
         With tab_scope="single" the session stays on the tab it already picked,
         so the agent cannot wander into another tab the user is working in.
+
+        Extension pages (the side panel itself, the mic-permission tab) live
+        in the SAME CDP browser context as ordinary tabs and are otherwise
+        indistinguishable - the side panel is always "visible" while open, so
+        without this exclusion the agent can attach to and navigate/act on
+        its own UI instead of the user's actual tab. This was a real, live
+        bug: it manifested as the target site loading inside the side panel.
+
+        Internal chrome:// pages (settings, chrome://extensions, etc.) are
+        excluded too - Chrome blocks script injection into them, so
+        page.evaluate() against one hangs/fails silently rather than
+        producing a clean error, which looked like a dead server. If that
+        leaves no real page at all, fall through to opening a blank tab
+        (below) instead of ever attaching to one of these.
         """
         assert self._context is not None
-        pages = [p for p in self._context.pages if not p.url.startswith("devtools://")]
+        pages = [
+            p
+            for p in self._context.pages
+            if not p.url.startswith("devtools://")
+            and not p.url.startswith("chrome-extension://")
+            and not p.url.startswith("chrome://")
+            and not p.url.startswith("chrome-search://")
+        ]
         if not pages:
             return await self._context.new_page()
 
@@ -229,6 +256,48 @@ class BrowserSessionManager:
             )
         except Exception:
             pass
+
+    async def ensure_task_border(self) -> None:
+        """Draw the colored tab border that signals "V.A.R.M.A is working
+        here" - the same visual language as Claude in Chrome's own outline.
+
+        Deliberately NOT gated on show_overlay: that toggle controls the
+        numbered-box debug layer, but the border is the primary "agent is
+        working on this tab" signal and should stay visible even with boxes
+        turned off (this was reported as wrong when it was coupled).
+        """
+        if self._page is None:
+            return
+        try:
+            await self._page.evaluate(dom_module.TASK_BORDER_SCRIPT)
+        except Exception:
+            pass
+
+    async def ensure_stop_control(self) -> None:
+        """Draw the on-page "Stop V.A.R.M.A" pill and bridge its click back
+        to Python.
+
+        The pill is injected over CDP into an ordinary page, which has no
+        chrome.* extension APIs available to it, so page.expose_function is
+        the only way for its click to reach back to us - Playwright wires it
+        as a real window-level binding that survives navigations, re-exposed
+        automatically for every new document on this page.
+        """
+        if self._page is None:
+            return
+        try:
+            if self._stop_control_page is not self._page:
+                await self._page.expose_function("varmaRequestStop", self._on_stop_pill_clicked)
+                self._stop_control_page = self._page
+            await self._page.evaluate(dom_module.STOP_PILL_SCRIPT)
+        except Exception:
+            # Binding can legitimately fail mid-navigation (execution context
+            # torn down) - never let a cosmetic control block a step.
+            pass
+
+    def _on_stop_pill_clicked(self) -> None:
+        if self.on_stop_requested is not None:
+            self.on_stop_requested()
 
     async def refresh_visuals(self, *, attempts: int = 3) -> None:
         """Re-draw the overlay after a navigation or DOM-replacing action.

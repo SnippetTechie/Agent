@@ -340,6 +340,141 @@ OVERLAY_SCRIPT = r"""
 })
 """
 
+# ---------------------------------------------------------------------------
+# Task-in-progress tab border — the same idea as Claude in Chrome's own
+# colored outline around the tab it's controlling. Distinct from
+# OVERLAY_SCRIPT's numbered element boxes (a debug/transparency layer, gated
+# by the same show_overlay toggle); this is the primary "V.A.R.M.A is working
+# here" signal, framed around the whole viewport. Idempotent, like
+# CURSOR_SCRIPT/STOP_PILL_SCRIPT, so redrawing it every step is safe.
+# ---------------------------------------------------------------------------
+
+TASK_BORDER_SCRIPT = r"""
+(() => {
+  const ID = '__varma_task_border__';
+  if (document.getElementById(ID)) return;
+
+  const root = document.createElement('div');
+  root.id = ID;
+  root.style.cssText = 'position:fixed;inset:0;z-index:2147483645;pointer-events:none;opacity:0;transition:opacity .35s ease;';
+
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes varma-border-pulse { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+    #${ID} .vtb-glow {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      box-shadow:
+        inset 0 0 0 3px rgba(56, 224, 245, 0.85),
+        inset 0 0 22px 3px rgba(56, 224, 245, 0.55),
+        inset 0 0 90px 14px rgba(56, 224, 245, 0.32);
+      animation: varma-border-pulse 2.6s ease-in-out infinite;
+    }
+    #${ID} .vtb-topbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, transparent, #38e0f5, transparent);
+      box-shadow: 0 0 14px 2px rgba(56, 224, 245, 0.7);
+      pointer-events: none;
+    }
+  `;
+  root.appendChild(style);
+
+  const glow = document.createElement('div');
+  glow.className = 'vtb-glow';
+  root.appendChild(glow);
+
+  const topbar = document.createElement('div');
+  topbar.className = 'vtb-topbar';
+  root.appendChild(topbar);
+
+  (document.body || document.documentElement).appendChild(root);
+  // rAF so the opacity:0 -> 1 transition actually animates instead of
+  // snapping straight to visible (same reasoning as STOP_PILL_SCRIPT).
+  requestAnimationFrame(() => { root.style.opacity = '1'; });
+})()
+"""
+
+# ---------------------------------------------------------------------------
+# On-page "Stop V.A.R.M.A" pill — the same idea as Claude in Chrome's own
+# stop control, so the user can halt a run without switching back to the
+# side panel. Idempotent (safe to call every step, like CURSOR_SCRIPT) so it
+# self-heals after a navigation wipes the DOM. Bridged back to Python via
+# session.ensure_stop_control()'s page.expose_function("varmaRequestStop",
+# ...) — a script injected over CDP into an ordinary page has no chrome.*
+# extension APIs, so it cannot chrome.runtime.sendMessage like the old
+# extension-side overlay did; calling back into the Python session directly
+# is the only bridge available here.
+# ---------------------------------------------------------------------------
+
+STOP_PILL_SCRIPT = r"""
+(() => {
+  const ID = '__varma_stop_pill__';
+  if (document.getElementById(ID)) return;
+
+  const root = document.createElement('div');
+  root.id = ID;
+  root.style.cssText = 'position:fixed;inset:auto 0 22px 0;z-index:2147483647;pointer-events:none;display:flex;justify-content:center;';
+
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes varma-stop-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+    #${ID} .vsp-pill {
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px 9px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(56, 224, 245, 0.4);
+      background: rgba(8, 9, 13, 0.92);
+      color: #e7ecf3;
+      font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35), 0 0 18px rgba(56, 224, 245, 0.25);
+      cursor: pointer;
+      opacity: 0;
+      transform: translateY(14px);
+      transition: opacity .28s ease, transform .28s cubic-bezier(.16,1,.3,1), border-color .15s ease;
+    }
+    #${ID} .vsp-pill.vsp-in { opacity: 1; transform: translateY(0); }
+    #${ID} .vsp-pill:hover:not(:disabled) { border-color: rgba(56, 224, 245, 0.75); }
+    #${ID} .vsp-pill:disabled { cursor: default; opacity: .55; }
+    #${ID} .vsp-dot {
+      width: 8px; height: 8px; border-radius: 2px;
+      background: #38e0f5;
+      box-shadow: 0 0 8px rgba(56, 224, 245, 0.9);
+      animation: varma-stop-pulse 1.8s ease-in-out infinite;
+    }
+  `;
+  root.appendChild(style);
+
+  const pill = document.createElement('button');
+  pill.type = 'button';
+  pill.className = 'vsp-pill';
+  pill.innerHTML = '<span class="vsp-dot"></span><span class="vsp-label">Stop V.A.R.M.A</span>';
+  pill.addEventListener('click', () => {
+    if (pill.disabled) return;
+    pill.disabled = true;
+    const label = pill.querySelector('.vsp-label');
+    if (label) label.textContent = 'Stopping…';
+    try {
+      if (window.varmaRequestStop) window.varmaRequestStop();
+    } catch (e) {
+      // Binding may be gone if the server already tore the session down.
+    }
+  });
+  root.appendChild(pill);
+
+  (document.body || document.documentElement).appendChild(root);
+  // rAF, not immediate: guarantees the browser paints the pre-transition
+  // (opacity 0) state first, so the fade-in actually animates instead of
+  // snapping straight to visible.
+  requestAnimationFrame(() => pill.classList.add('vsp-in'));
+})()
+"""
+
 CLEAR_OVERLAY_SCRIPT = r"""
 (() => {
   const el = document.getElementById('__varma_overlay__');
@@ -349,6 +484,10 @@ CLEAR_OVERLAY_SCRIPT = r"""
     }
     el.remove();
   }
+  const taskBorder = document.getElementById('__varma_task_border__');
+  if (taskBorder) taskBorder.remove();
+  const stopPill = document.getElementById('__varma_stop_pill__');
+  if (stopPill) stopPill.remove();
   const cursor = document.getElementById('__varma_cursor__');
   if (cursor) cursor.remove();
   return true;

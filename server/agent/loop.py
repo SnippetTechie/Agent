@@ -155,6 +155,9 @@ class AgentLoop:
         self._stop.clear()
         self._history.clear()
         self._step_records.clear()
+        # Lets the on-page "Stop V.A.R.M.A" pill halt the run the same way
+        # the side panel's own stop button does.
+        self.session.on_stop_requested = self.stop
 
         started = time.perf_counter()
 
@@ -192,6 +195,11 @@ class AgentLoop:
                 # Park the cursor on screen so the visual layer is present from
                 # the very first step, not just once an action runs.
                 await self.session.ensure_cursor_visible()
+                # Colored tab border ("V.A.R.M.A is working here") + the
+                # on-page stop pill - both idempotent, so this also re-draws
+                # them after a navigation wipes the DOM.
+                await self.session.ensure_task_border()
+                await self.session.ensure_stop_control()
             except Exception as exc:
                 await self._emit({"type": "ERROR", "error": f"Page read failed: {exc}"})
                 return {"success": False, "result": str(exc), "metrics": self.metrics}

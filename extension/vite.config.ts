@@ -64,6 +64,12 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, "src/sidepanel/main.tsx"),
         background: path.resolve(__dirname, "src/background/index.ts"),
+        // mic-permission.html is a standalone tab-only page (lib/speech.ts
+        // opens it via chrome.tabs.create to surface Chrome's mic prompt,
+        // which side panels can't show), not referenced by the manifest or
+        // imported from any bundled entry, so it needs to be listed
+        // explicitly to be built at all.
+        "mic-permission": path.resolve(__dirname, "src/sidepanel/mic-permission.html"),
       },
     },
   },
