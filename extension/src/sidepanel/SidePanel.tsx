@@ -7,6 +7,7 @@ import { PrivacyNoticeBanner } from "./components/PrivacyNoticeBanner.js";
 import { useAgentSession } from "./hooks/useAgentSession.js";
 import { useApprovalMode } from "./hooks/useApprovalMode.js";
 import { usePrivacyNotice } from "./hooks/usePrivacyNotice.js";
+import { useTabScope } from "./hooks/useTabScope.js";
 import { useVisualSettings } from "./hooks/useVisualSettings.js";
 
 export function SidePanel() {
@@ -17,6 +18,8 @@ export function SidePanel() {
   // Single source of truth for the on-page visual layer, shared by the
   // settings menu and the run loop.
   const [visuals, updateVisuals] = useVisualSettings();
+  // Tab scope is read by the run loop when it starts a task.
+  const [tabScope, setTabScope] = useTabScope();
 
   const {
     turns,
@@ -28,7 +31,7 @@ export function SidePanel() {
     approveCurrentTurn,
     denyCurrentTurn,
     clearSession,
-  } = useAgentSession(approvalMode, persistEnabled, visuals);
+  } = useAgentSession(approvalMode, persistEnabled, visuals, tabScope);
 
   const [auditOpen, setAuditOpen] = useState(false);
 
@@ -39,6 +42,8 @@ export function SidePanel() {
         onToggleAuditLog={() => setAuditOpen((v) => !v)}
         visuals={visuals}
         updateVisuals={updateVisuals}
+        tabScope={tabScope}
+        setTabScope={setTabScope}
       />
 
       <MessageFeed
@@ -53,6 +58,8 @@ export function SidePanel() {
         isRunning={isRunning}
         approvalMode={approvalMode}
         onApprovalModeChange={setApprovalMode}
+        visuals={visuals}
+        updateVisuals={updateVisuals}
         onSubmit={submitPrompt}
         onStop={stopCurrentTurn}
       />

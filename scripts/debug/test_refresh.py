@@ -1,13 +1,13 @@
 """Verify the overlay is re-drawn after a submit that navigates.
 
-Run: python scripts/test_refresh.py
+Run: python scripts/debug/test_refresh.py
 """
 
 import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import BrowserSessionManager  # noqa: E402
 

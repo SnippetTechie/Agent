@@ -29,13 +29,37 @@ export interface AgentStep {
   actions?: BrowserUseAction[];
 }
 
-export type ApprovalState = "pending" | "approved" | "denied";
+export type ApprovalState = "pending" | "approved" | "denied" | "expired";
 
 export interface ApprovalRequest {
   id: string;
   actionLabel: string;
   riskNote: string;
   state: ApprovalState;
+  /** The approval mode this request was raised under. */
+  mode?: ApprovalMode;
+  /** Agent step that raised the request. */
+  step?: number;
+  /** Epoch ms after which the server stops waiting (manual mode only). */
+  expiresAt?: number;
+}
+
+/** One category of sensitive data masked on-device before any dispatch. */
+export interface RedactionNotice {
+  tag: RedactionTag;
+  /** Human label for the masked field, e.g. `input:password`. */
+  label: string;
+  count: number;
+}
+
+/** Reachability of the receiver, the model and the browser. */
+export interface HealthStatus {
+  /** True when the receiver itself answered. */
+  serverUp: boolean;
+  vllmReachable: boolean;
+  cdpReachable: boolean;
+  model?: string;
+  error?: string;
 }
 
 export type TurnStatus =

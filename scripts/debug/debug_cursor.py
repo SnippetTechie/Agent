@@ -1,10 +1,13 @@
-"""Debug cursor movement. Run: python scripts/debug_cursor.py"""
+"""Debug cursor movement.
+
+Run: python scripts/debug/debug_cursor.py
+"""
 
 import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import BrowserSessionManager  # noqa: E402
 

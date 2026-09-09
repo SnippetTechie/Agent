@@ -1,23 +1,28 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { ChevronDown, Circle, CircleCheck, CircleX, LoaderCircle, MinusCircle } from "lucide-react";
 import type { AgentStep, AgentTurn } from "../types.js";
 import { StatusChip } from "./StatusChip.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import type { TranslationKey } from "../lib/i18n/I18nContext.js";
 
+const STATUS_KEY: Record<AgentTurn["status"], TranslationKey> = {
+  running: "card.statusRunning",
+  "awaiting-approval": "card.statusAwaitingApproval",
+  completed: "card.statusCompleted",
+  denied: "card.statusDenied",
+  stopped: "card.statusStopped",
+  error: "card.statusError",
+};
+
 function StepIndicator({ status }: { status: AgentStep["status"] }) {
   if (status === "done") return <CircleCheck className="h-4 w-4 text-varma-verified" strokeWidth={2} />;
-  if (status === "active") return <LoaderCircle className="h-4 w-4 text-varma-signal animate-spin" strokeWidth={2} />;
+  if (status === "active") return <LoaderCircle className="h-4 w-4 animate-spin text-varma-signal" strokeWidth={2} />;
   if (status === "error") return <CircleX className="h-4 w-4 text-varma-redact" strokeWidth={2} />;
   if (status === "skipped") return <MinusCircle className="h-4 w-4 text-varma-text-faint/60" strokeWidth={2} />;
   return <Circle className="h-4 w-4 text-varma-text-faint" strokeWidth={2} />;
 }
 
-function StepRow({
-  step,
-}: {
-  step: AgentStep;
-}) {
+function StepRow({ step }: { step: AgentStep }) {
   const isSkipped = step.status === "skipped";
 
   return (
@@ -32,8 +37,8 @@ function StepRow({
               isSkipped
                 ? "text-varma-text-faint line-through"
                 : step.status === "pending"
-                ? "text-varma-text-dim"
-                : "text-varma-text"
+                  ? "text-varma-text-dim"
+                  : "text-varma-text"
             }`}
           >
             {step.label}
@@ -50,22 +55,13 @@ function StepRow({
   );
 }
 
-const STATUS_KEY: Record<AgentTurn["status"], TranslationKey> = {
-  running: "card.statusRunning",
-  "awaiting-approval": "card.statusAwaitingApproval",
-  completed: "card.statusCompleted",
-  denied: "card.statusDenied",
-  stopped: "card.statusStopped",
-  error: "card.statusError",
-};
-
-export function ActionCard({
-  turn,
-}: {
-  turn: AgentTurn;
-}) {
+function ActionCardInner({ turn }: { turn: AgentTurn }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(turn.status === "running" || turn.status === "awaiting-approval");
+  // Only the newest turn auto-expands; finished turns start collapsed so a long
+  // session does not render dozens of step lists.
+  const [expanded, setExpanded] = useState(
+    turn.status === "running" || turn.status === "awaiting-approval"
+  );
   const activeStep = turn.steps.find((s) => s.status === "active");
 
   return (
@@ -82,7 +78,10 @@ export function ActionCard({
           <span className="truncate text-[12px] font-medium text-varma-text-dim">
             {t("card.steps", { n: turn.steps.length })}
             {!expanded && (
-              <span className="text-varma-text"> · {activeStep ? activeStep.label : t(STATUS_KEY[turn.status])}</span>
+              <span className="text-varma-text">
+                {" · "}
+                {activeStep ? activeStep.label : t(STATUS_KEY[turn.status])}
+              </span>
             )}
           </span>
         </div>
@@ -105,3 +104,5 @@ export function ActionCard({
     </div>
   );
 }
+
+export const ActionCard = memo(ActionCardInner);

@@ -5,8 +5,10 @@ import type {
   AuditLogEntry,
   BrowserUseAction,
   ContextMode,
+  RedactionTag,
   SuggestionIntent,
   TabContext,
+  TabScope,
 } from "../types.js";
 import {
   buildApprovalRequest,
@@ -28,6 +30,7 @@ import {
   type WsAction,
   type WsStepComplete,
   type WsApprovalRequired,
+  type WsRedactions,
   type WsFinalResult,
   type WsError,
   type WsStopped,
@@ -35,19 +38,46 @@ import {
 } from "../lib/agentWebSocket.js";
 
 const STORAGE_KEY = "varma.session.v1";
+/** Keep the persisted feed bounded — this is a UI transcript, not an archive. */
+const MAX_PERSISTED_TURNS = 40;
+const MAX_AUDIT_ENTRIES = 200;
+/** Chat turns replayed as context to /chat. */
+const CHAT_HISTORY_TURNS = 6;
 
 interface PersistedState {
   turns: AgentTurn[];
   auditLog: AuditLogEntry[];
 }
 
+/** The agent's own redaction tag vocabulary, used to coerce server strings. */
+const REDACTION_TAGS: readonly RedactionTag[] = [
+  "CREDENTIAL",
+  "COORDINATES",
+  "FACE",
+  "ID_NUMBER",
+  "SIGNATURE",
+];
+
+function asRedactionTag(value: string): RedactionTag {
+  const upper = String(value || "").toUpperCase() as RedactionTag;
+  return REDACTION_TAGS.includes(upper) ? upper : "CREDENTIAL";
+}
+
+export interface VisualSettingsInput {
+  showOverlay: boolean;
+  showCursor: boolean;
+  autoRedact: boolean;
+}
+
 export function useAgentSession(
   approvalMode: ApprovalMode,
   persistEnabled: boolean,
-  visuals: { showOverlay: boolean; showCursor: boolean } = {
+  visuals: VisualSettingsInput = {
     showOverlay: true,
     showCursor: true,
-  }
+    autoRedact: true,
+  },
+  tabScope: TabScope = "single"
 ) {
   const { t } = useI18n();
   const [turns, setTurns] = useState<AgentTurn[]>([]);
@@ -57,19 +87,37 @@ export function useAgentSession(
 
   const agentConnRef = useRef<AgentConnection | null>(null);
   const approvalResolvers = useRef<Map<string, (approved: boolean) => void>>(new Map());
+  /** Timers that auto-resolve an "auto" approval; cleared on unmount. */
+  const approvalTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   // Keep the latest visual settings reachable from the run loop without
   // re-creating its callbacks on every toggle.
   const visualsRef = useRef(visuals);
   visualsRef.current = visuals;
 
+  // Keep the current approval mode reachable from a run already in flight, so
+  // changing the menu mid-task affects the next gate rather than being ignored.
+  const approvalModeRef = useRef(approvalMode);
+  approvalModeRef.current = approvalMode;
+
+  const tabScopeRef = useRef(tabScope);
+  tabScopeRef.current = tabScope;
+
+  const clearApprovalTimers = useCallback(() => {
+    for (const timer of approvalTimers.current) clearTimeout(timer);
+    approvalTimers.current.clear();
+  }, []);
+
   // Push live changes to a run that is already in flight.
   useEffect(() => {
     agentConnRef.current?.setVisuals({
       overlay: visuals.showOverlay,
       cursor: visuals.showCursor,
+      redact: visuals.autoRedact,
     });
-  }, [visuals.showOverlay, visuals.showCursor]);
+  }, [visuals.showOverlay, visuals.showCursor, visuals.autoRedact]);
+
+  useEffect(() => () => clearApprovalTimers(), [clearApprovalTimers]);
 
   // ─── Hydration & Tab Context ─────────────────────────────────────────────
 
@@ -79,8 +127,8 @@ export function useAgentSession(
       loadState<PersistedState>(STORAGE_KEY).then((saved) => {
         if (cancelled) return;
         if (saved) {
-          setTurns(saved.turns);
-          setAuditLog(saved.auditLog);
+          setTurns(saved.turns ?? []);
+          setAuditLog(saved.auditLog ?? []);
         }
         setHydrated(true);
       });
@@ -98,20 +146,35 @@ export function useAgentSession(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Persist on a short debounce: a running task fires many state updates per
+  // step, and writing to chrome.storage on each one is pure overhead.
   useEffect(() => {
     if (!hydrated || !persistEnabled) return;
-    void saveState<PersistedState>(STORAGE_KEY, { turns, auditLog });
+    const timer = setTimeout(() => {
+      void saveState<PersistedState>(STORAGE_KEY, {
+        turns: turns.slice(-MAX_PERSISTED_TURNS),
+        auditLog: auditLog.slice(0, MAX_AUDIT_ENTRIES),
+      });
+    }, 400);
+    return () => clearTimeout(timer);
   }, [turns, auditLog, hydrated, persistEnabled]);
 
   // ─── State Helpers ───────────────────────────────────────────────────────
 
-  const updateTurn = useCallback((turnId: string, patch: Partial<AgentTurn> | ((t: AgentTurn) => AgentTurn)) => {
-    setTurns((prev) =>
-      prev.map((turn) =>
-        turn.id === turnId ? (typeof patch === "function" ? patch(turn) : { ...turn, ...patch }) : turn
-      )
-    );
-  }, []);
+  const updateTurn = useCallback(
+    (turnId: string, patch: Partial<AgentTurn> | ((t: AgentTurn) => AgentTurn)) => {
+      setTurns((prev) =>
+        prev.map((turn) =>
+          turn.id === turnId
+            ? typeof patch === "function"
+              ? patch(turn)
+              : { ...turn, ...patch }
+            : turn
+        )
+      );
+    },
+    []
+  );
 
   const updateStep = useCallback(
     (turnId: string, stepId: string, patch: Partial<AgentTurn["steps"][number]>) => {
@@ -125,23 +188,23 @@ export function useAgentSession(
 
   const appendAudit = useCallback((entries: AuditLogEntry[]) => {
     if (entries.length === 0) return;
-    setAuditLog((prev) => [...entries, ...prev]);
+    setAuditLog((prev) => [...entries, ...prev].slice(0, MAX_AUDIT_ENTRIES));
   }, []);
 
-  // ─── Chat Mode (unchanged — POST /chat to Gnani Evon) ───────────────────
+  const audit = useCallback(
+    (message: string, tag: AuditLogEntry["tag"] = "SESSION"): AuditLogEntry => ({
+      id: nextId("audit"),
+      timestamp: Date.now(),
+      message,
+      tag,
+    }),
+    []
+  );
+
+  // ─── Chat Mode (POST /chat) ──────────────────────────────────────────────
 
   const runChatTurn = useCallback(
-    async (turn: AgentTurn) => {
-      const history: ChatMessage[] = [];
-      for (const prev of turns.slice(-6)) {
-        const assistantReply = prev.response || prev.analysis;
-        if (assistantReply) {
-          history.push({ role: "user", content: prev.prompt });
-          history.push({ role: "assistant", content: assistantReply });
-        }
-      }
-      history.push({ role: "user", content: turn.prompt });
-
+    async (turn: AgentTurn, history: ChatMessage[]) => {
       const chatResult = await sendChatMessage(turn.prompt, history);
       const answer =
         chatResult.response ||
@@ -155,19 +218,16 @@ export function useAgentSession(
       }));
 
       appendAudit([
-        {
-          id: nextId("audit"),
-          timestamp: Date.now(),
-          message: chatResult.ok
-            ? `Chat response processed via ${chatResult.model || "Gnani Evon"}`
-            : `Chat response (local standby mode)`,
-          tag: "SESSION",
-        },
+        audit(
+          chatResult.ok
+            ? `Chat response processed via ${chatResult.model || "the local model"}`
+            : `Chat response (local standby mode)`
+        ),
       ]);
 
       soundEngine.playComplete();
     },
-    [updateTurn, appendAudit, turns]
+    [updateTurn, appendAudit, audit]
   );
 
   // ─── Vision Mode (WebSocket → native CDP agent) ─────────────────────────
@@ -175,29 +235,21 @@ export function useAgentSession(
   const runBrowserUseTurn = useCallback(
     async (turn: AgentTurn, domain: string) => {
       const steps = turn.steps;
+      const [connectStep, perceiveStep, reasonStep] = steps;
 
-      // Mark step 0 (Connecting) as active
-      if (steps[0]) {
-        updateStep(turn.id, steps[0].id, { status: "active" });
-      }
+      if (connectStep) updateStep(turn.id, connectStep.id, { status: "active" });
 
-      // Open WebSocket connection to the agent server
       const conn = new AgentConnection({
         onConnected: () => {
-          if (steps[0]) updateStep(turn.id, steps[0].id, { status: "done" });
-          if (steps[1]) updateStep(turn.id, steps[1].id, { status: "active" });
+          if (connectStep) updateStep(turn.id, connectStep.id, { status: "done" });
+          if (perceiveStep) updateStep(turn.id, perceiveStep.id, { status: "active" });
           soundEngine.playStepDone();
-          appendAudit([{
-            id: nextId("audit"),
-            timestamp: Date.now(),
-            message: "Connected to agent via CDP",
-            tag: "SESSION",
-          }]);
+          appendAudit([audit("Connected to agent via CDP")]);
         },
 
         onStepStart: (msg: WsStepStart) => {
-          if (steps[2]) {
-            updateStep(turn.id, steps[2].id, {
+          if (reasonStep) {
+            updateStep(turn.id, reasonStep.id, {
               status: "active",
               detail: msg.status || "Reasoning...",
             });
@@ -207,8 +259,8 @@ export function useAgentSession(
         // The agent's own view of the page: how many elements it can see and
         // how long perception took. This is the "on-screen element" readout.
         onPageState: (msg: WsPageState) => {
-          if (steps[1]) {
-            updateStep(turn.id, steps[1].id, {
+          if (perceiveStep) {
+            updateStep(turn.id, perceiveStep.id, {
               status: "done",
               detail: `${msg.elements.length} interactive elements · ${Math.round(msg.observe_ms)}ms`,
             });
@@ -219,90 +271,111 @@ export function useAgentSession(
           }));
         },
 
+        // Layer-1 redaction report: what was masked on-device before the model
+        // saw anything. Rendered in the privacy audit log, never the values.
+        onRedactions: (msg: WsRedactions) => {
+          if (!msg.redactions?.length) return;
+          appendAudit(
+            msg.redactions.map((r) =>
+              audit(
+                `Masked ${r.count} ${r.label} field(s) on ${domain}`,
+                asRedactionTag(r.tag)
+              )
+            )
+          );
+        },
+
         // One action executed. Streamed before the step finishes so the user
         // sees progress without waiting for the whole step.
         onAction: (msg: WsAction) => {
           const action = msg.action;
           const detail = describeAction(action);
-          if (steps[2]) {
-            updateStep(turn.id, steps[2].id, { status: "done" });
-          }
+          if (reasonStep) updateStep(turn.id, reasonStep.id, { status: "done" });
+
           const dynamicStep = {
             id: nextId("step"),
             label: detail,
             detail: action.error ? `Failed: ${action.error}` : undefined,
-            category: action.ok === false ? ("executing" as const) : ("executing" as const),
+            category: "executing" as const,
             status: action.ok === false ? ("error" as const) : ("done" as const),
             actions: [action as unknown as BrowserUseAction],
           };
           updateTurn(turn.id, (prev) => ({ ...prev, steps: [...prev.steps, dynamicStep] }));
           soundEngine.playStepDone();
 
-          appendAudit([{
-            id: nextId("audit"),
-            timestamp: Date.now(),
-            message: `Step ${msg.step}: ${detail}`,
-            tag: "SESSION",
-          }]);
+          appendAudit([audit(`Step ${msg.step}: ${detail}`)]);
         },
 
         onStepComplete: (msg: WsStepComplete) => {
-          if (steps[1]) updateStep(turn.id, steps[1].id, { status: "done" });
-          if (steps[2] && msg.is_done) updateStep(turn.id, steps[2].id, { status: "done" });
+          if (perceiveStep) updateStep(turn.id, perceiveStep.id, { status: "done" });
+          if (reasonStep && msg.is_done) updateStep(turn.id, reasonStep.id, { status: "done" });
           soundEngine.playStepDone();
 
           if (msg.timing?.total_ms != null) {
-            appendAudit([{
-              id: nextId("audit"),
-              timestamp: Date.now(),
-              message:
+            appendAudit([
+              audit(
                 `Step ${msg.step} timing — total ${Math.round(msg.timing.total_ms)}ms ` +
-                `(perceive ${Math.round(msg.timing.observe_ms ?? 0)}ms, ` +
-                `think ${Math.round(msg.timing.llm_ms ?? 0)}ms, ` +
-                `act ${Math.round(msg.timing.action_ms ?? 0)}ms)`,
-              tag: "SESSION",
-            }]);
+                  `(perceive ${Math.round(msg.timing.observe_ms ?? 0)}ms, ` +
+                  `think ${Math.round(msg.timing.llm_ms ?? 0)}ms, ` +
+                  `act ${Math.round(msg.timing.action_ms ?? 0)}ms)`
+              ),
+            ]);
           }
 
           if (msg.extracted_content) {
-            appendAudit([{
-              id: nextId("audit"),
-              timestamp: Date.now(),
-              message: `Extracted: ${msg.extracted_content.slice(0, 200)}`,
-              tag: "SESSION",
-            }]);
+            appendAudit([audit(`Extracted: ${msg.extracted_content.slice(0, 200)}`)]);
           }
         },
 
         onApprovalRequired: (msg: WsApprovalRequired) => {
-          const actionDesc = msg.actions
-            ?.map((a: BrowserUseActionPayload) => a.type || a.name || "action")
-            .join(", ") || "browser action";
+          const actionDesc =
+            msg.actions
+              ?.map((a: BrowserUseActionPayload) => a.type || a.name || "action")
+              .join(", ") || "browser action";
 
+          // The server only raises a gate in manual/auto mode, so the mode that
+          // arrives in the message is authoritative for this request.
+          const requestMode: ApprovalMode = msg.mode === "auto" ? "auto" : "manual";
           const approval = buildApprovalRequest(
             t,
             domain,
             `V.A.R.M.A Action: ${actionDesc}`,
-            msg.thought || "The agent wants to perform an action on the page."
+            msg.thought || "The agent wants to perform an action on the page.",
+            requestMode,
+            msg.step,
+            msg.timeout_s
           );
           updateTurn(turn.id, { status: "awaiting-approval", approval });
           soundEngine.playApprovalPrompt();
 
-          if (approvalMode === "auto") {
-            // Auto-approve after a brief visual pause
-            setTimeout(() => {
-              updateTurn(turn.id, (t2) =>
-                t2.approval ? { ...t2, approval: { ...t2.approval, state: "approved" }, status: "running" } : t2
+          if (requestMode === "auto") {
+            // Auto-approve after a brief visible pause so the banner registers
+            // in the audit trail without requiring a click.
+            const timer = setTimeout(() => {
+              approvalTimers.current.delete(timer);
+              updateTurn(turn.id, (prev) =>
+                prev.approval
+                  ? {
+                      ...prev,
+                      approval: { ...prev.approval, state: "approved" },
+                      status: "running",
+                    }
+                  : prev
               );
               conn.approve();
-            }, 600);
+            }, 900);
+            approvalTimers.current.add(timer);
           } else {
-            // Manual: register resolver so UI buttons can approve/deny
+            // Manual: register a resolver so the banner's buttons can decide.
             approvalResolvers.current.set(turn.id, (approved) => {
-              updateTurn(turn.id, (t2) =>
-                t2.approval
-                  ? { ...t2, approval: { ...t2.approval, state: approved ? "approved" : "denied" }, status: approved ? "running" : "denied" }
-                  : t2
+              updateTurn(turn.id, (prev) =>
+                prev.approval
+                  ? {
+                      ...prev,
+                      approval: { ...prev.approval, state: approved ? "approved" : "denied" },
+                      status: approved ? "running" : "denied",
+                    }
+                  : prev
               );
               if (approved) {
                 conn.approve();
@@ -319,9 +392,7 @@ export function useAgentSession(
           updateTurn(turn.id, (prev) => ({
             ...prev,
             steps: prev.steps.map((s) =>
-              s.status === "pending" || s.status === "active"
-                ? { ...s, status: "done" }
-                : s
+              s.status === "pending" || s.status === "active" ? { ...s, status: "done" } : s
             ),
             status: msg.success ? "completed" : "error",
             summary: msg.result || buildSummary(t, "completed", 0),
@@ -330,48 +401,45 @@ export function useAgentSession(
           soundEngine.playComplete();
 
           const avg = msg.metrics?.avg_step_ms;
-          appendAudit([{
-            id: nextId("audit"),
-            timestamp: Date.now(),
-            message:
+          appendAudit([
+            audit(
               `Task ${msg.success ? "completed" : "failed"} in ${Math.round(msg.elapsed_ms ?? 0)}ms` +
-              (typeof avg === "number" ? ` · avg ${Math.round(avg)}ms/step` : ""),
-            tag: "SESSION",
-          }]);
+                (typeof avg === "number" ? ` · avg ${Math.round(avg)}ms/step` : "")
+            ),
+          ]);
           conn.close();
-          agentConnRef.current = null;
+          if (agentConnRef.current === conn) agentConnRef.current = null;
         },
 
         onError: (msg: WsError) => {
           updateTurn(turn.id, (prev) => ({
             ...prev,
-            steps: prev.steps.map((s) =>
-              s.status === "active" ? { ...s, status: "error" } : s
-            ),
+            steps: prev.steps.map((s) => (s.status === "active" ? { ...s, status: "error" } : s)),
             status: "error",
             summary: `Error: ${msg.error}`,
           }));
-          appendAudit([{
-            id: nextId("audit"),
-            timestamp: Date.now(),
-            message: `Agent error: ${msg.error}`,
-            tag: "SESSION",
-          }]);
+          appendAudit([audit(`Agent error: ${msg.error}`)]);
           conn.close();
-          agentConnRef.current = null;
+          if (agentConnRef.current === conn) agentConnRef.current = null;
         },
 
         onStopped: (msg: WsStopped) => {
+          const denied = /denied/i.test(msg.reason || "");
           updateTurn(turn.id, (prev) => ({
             ...prev,
-            steps: prev.steps.map((s) =>
-              s.status === "active" ? { ...s, status: "error" } : s
-            ),
-            status: msg.reason?.includes("denied") ? "denied" : "stopped",
-            summary: msg.reason || buildSummary(t, "stopped", 0),
+            steps: prev.steps.map((s) => (s.status === "active" ? { ...s, status: "error" } : s)),
+            status: denied ? "denied" : "stopped",
+            summary: msg.reason || buildSummary(t, denied ? "denied" : "stopped", 0),
+            // A denial arrives while the banner is still pending; close it out
+            // so the UI does not keep asking for a decision already made.
+            approval:
+              prev.approval && prev.approval.state === "pending"
+                ? { ...prev.approval, state: denied ? "denied" : "expired" }
+                : prev.approval,
           }));
+          approvalResolvers.current.delete(turn.id);
           conn.close();
-          agentConnRef.current = null;
+          if (agentConnRef.current === conn) agentConnRef.current = null;
         },
 
         onDisconnect: () => {
@@ -381,6 +449,10 @@ export function useAgentSession(
                 ...prev,
                 status: "error",
                 summary: "Lost connection to the agent server",
+                approval:
+                  prev.approval && prev.approval.state === "pending"
+                    ? { ...prev.approval, state: "expired" }
+                    : prev.approval,
                 steps: prev.steps.map((s) =>
                   s.status === "active" ? { ...s, status: "error" } : s
                 ),
@@ -388,36 +460,35 @@ export function useAgentSession(
             }
             return prev;
           });
-          agentConnRef.current = null;
+          approvalResolvers.current.delete(turn.id);
+          if (agentConnRef.current === conn) agentConnRef.current = null;
         },
       });
 
       agentConnRef.current = conn;
 
       try {
-        const wsApprovalMode =
-          approvalMode === "skip" ? "skip" : approvalMode === "auto" ? "auto" : "manual";
-        await conn.connect(turn.prompt, wsApprovalMode, {
+        await conn.connect(turn.prompt, approvalModeRef.current, {
           showOverlay: visualsRef.current.showOverlay,
           showCursor: visualsRef.current.showCursor,
+          autoRedact: visualsRef.current.autoRedact,
+          tabScope: tabScopeRef.current,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : "Connection failed";
-        if (steps[0]) updateStep(turn.id, steps[0].id, { status: "error", detail: errorMsg });
+        if (connectStep) updateStep(turn.id, connectStep.id, { status: "error", detail: errorMsg });
         updateTurn(turn.id, {
           status: "error",
           summary: errorMsg,
+          steps: turn.steps.map((s) =>
+            s.status === "pending" || s.status === "active" ? { ...s, status: "error" } : s
+          ),
         });
-        appendAudit([{
-          id: nextId("audit"),
-          timestamp: Date.now(),
-          message: `Agent connection failed: ${errorMsg}`,
-          tag: "SESSION",
-        }]);
-        agentConnRef.current = null;
+        appendAudit([audit(`Agent connection failed: ${errorMsg}`)]);
+        if (agentConnRef.current === conn) agentConnRef.current = null;
       }
     },
-    [updateTurn, updateStep, appendAudit, t, approvalMode]
+    [updateTurn, updateStep, appendAudit, audit, t]
   );
 
   // ─── Submit Prompt ───────────────────────────────────────────────────────
@@ -435,30 +506,71 @@ export function useAgentSession(
         prompt: trimmed,
         createdAt: Date.now(),
         mode,
-        steps: mode === "vision" ? buildInitialSteps(t, domain, trimmed, intent) : [],
+        steps: mode === "vision" ? buildInitialSteps(t, domain) : [],
         status: "running",
       };
+
+      // Build the chat history from the current turns before appending this one.
+      const history: ChatMessage[] = [];
+      if (mode === "chat") {
+        for (const prev of turns.slice(-CHAT_HISTORY_TURNS)) {
+          const assistantReply = prev.response || prev.analysis;
+          if (assistantReply) {
+            history.push({ role: "user", content: prev.prompt });
+            history.push({ role: "assistant", content: assistantReply });
+          }
+        }
+        history.push({ role: "user", content: trimmed });
+      }
 
       setTurns((prev) => [...prev, turn]);
       soundEngine.playSend();
 
       if (mode === "chat") {
-        void runChatTurn(turn);
+        void runChatTurn(turn, history);
       } else {
         void runBrowserUseTurn(turn, domain);
       }
     },
-    [tabContext.domain, runChatTurn, runBrowserUseTurn, t]
+    [tabContext.domain, runChatTurn, runBrowserUseTurn, turns, t]
   );
 
   // ─── Controls ────────────────────────────────────────────────────────────
 
-  const stopCurrentTurn = useCallback(() => {
-    // Tell the server to stop the browser-use agent
-    agentConnRef.current?.stop();
-    agentConnRef.current?.close();
-    agentConnRef.current = null;
+  /** Mark any in-flight turn as stopped so the UI never stays stuck "running". */
+  const settleActiveTurns = useCallback((reason: string) => {
+    setTurns((prev) =>
+      prev.map((turn) => {
+        if (turn.status !== "running" && turn.status !== "awaiting-approval") return turn;
+        return {
+          ...turn,
+          status: "stopped",
+          summary: reason,
+          approval:
+            turn.approval && turn.approval.state === "pending"
+              ? { ...turn.approval, state: "expired" }
+              : turn.approval,
+          steps: turn.steps.map((s) =>
+            s.status === "active" || s.status === "pending" ? { ...s, status: "skipped" } : s
+          ),
+        };
+      })
+    );
   }, []);
+
+  const stopCurrentTurn = useCallback(() => {
+    const conn = agentConnRef.current;
+    clearApprovalTimers();
+    approvalResolvers.current.clear();
+    // Tell the server to stop the run, then close. The server's own STOPPED
+    // event may never arrive if the socket is already gone, so settle the UI
+    // here too — otherwise the turn spins forever.
+    conn?.stop();
+    conn?.close();
+    agentConnRef.current = null;
+    settleActiveTurns(t("summary.stopped"));
+    soundEngine.playDeny();
+  }, [clearApprovalTimers, settleActiveTurns, t]);
 
   const resolveApproval = useCallback((approved: boolean) => {
     const runningTurnId = [...approvalResolvers.current.keys()].pop();
@@ -470,15 +582,19 @@ export function useAgentSession(
   const denyCurrentTurn = useCallback(() => resolveApproval(false), [resolveApproval]);
 
   const clearSession = useCallback(() => {
+    clearApprovalTimers();
+    approvalResolvers.current.clear();
     agentConnRef.current?.stop();
     agentConnRef.current?.close();
     agentConnRef.current = null;
     setTurns([]);
     setAuditLog([]);
     void clearState(STORAGE_KEY);
-  }, []);
+  }, [clearApprovalTimers]);
 
-  const isRunning = turns.some((turn) => turn.status === "running" || turn.status === "awaiting-approval");
+  const isRunning = turns.some(
+    (turn) => turn.status === "running" || turn.status === "awaiting-approval"
+  );
 
   return {
     turns,

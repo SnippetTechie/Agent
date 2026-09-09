@@ -55,9 +55,3 @@ export function describeAction(action: AnyAction | undefined): string {
       return kind;
   }
 }
-
-/** True when the action could change the page and may need user approval. */
-export function isRiskyAction(action: AnyAction | undefined): boolean {
-  const kind = String(action?.type ?? action?.name ?? "");
-  return kind === "click" || kind === "type" || kind === "navigate" || kind === "press";
-}

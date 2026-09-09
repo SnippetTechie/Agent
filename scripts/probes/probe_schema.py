@@ -1,6 +1,6 @@
 """Compare output schemas to find the cheapest reliable action format.
 
-Run: python scripts/probe_schema.py
+Run: python scripts/probes/probe_schema.py
 """
 
 import asyncio
@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import VLLMClient  # noqa: E402
 from server.agent import prompts  # noqa: E402

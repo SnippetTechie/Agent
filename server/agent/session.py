@@ -40,6 +40,7 @@ class BrowserSessionManager:
         navigation_timeout_ms: int = 20_000,
         show_overlay: bool = True,
         show_cursor: bool = True,
+        auto_redact: bool = True,
         step_settle: float = 0.12,
     ) -> None:
         self.cdp_url = cdp_url
@@ -48,6 +49,12 @@ class BrowserSessionManager:
         self.navigation_timeout_ms = navigation_timeout_ms
         self.show_overlay = show_overlay
         self.show_cursor = show_cursor
+        # Layer-1 deterministic PII redaction. On by default: leaking is fatal,
+        # and the cost is a handful of regex passes over text already in memory.
+        self.auto_redact = auto_redact
+        # "single" pins the run to the tab it attached to; "all" allows the
+        # agent to follow tabs it opens itself (set per run by the receiver).
+        self.tab_scope: str = "single"
         self.step_settle = step_settle
 
         self._playwright: Playwright | None = None
@@ -107,11 +114,18 @@ class BrowserSessionManager:
             return self._page
 
     async def _pick_active_page(self) -> Page:
-        """Prefer the tab the user can actually see."""
+        """Prefer the tab the user can actually see.
+
+        With tab_scope="single" the session stays on the tab it already picked,
+        so the agent cannot wander into another tab the user is working in.
+        """
         assert self._context is not None
         pages = [p for p in self._context.pages if not p.url.startswith("devtools://")]
         if not pages:
             return await self._context.new_page()
+
+        if self.tab_scope == "single" and self._page is not None and self._page in pages:
+            return self._page
 
         for page in reversed(pages):
             try:
@@ -146,7 +160,9 @@ class BrowserSessionManager:
         """Extract the current page state and refresh the element registry."""
         page = await self.connect()
         started = time.perf_counter()
-        state = await page.evaluate(dom_module.EXTRACT_SCRIPT, {})
+        state = await page.evaluate(
+            dom_module.EXTRACT_SCRIPT, {"redact": self.auto_redact}
+        )
         self.last_observe_ms = (time.perf_counter() - started) * 1000.0
 
         want_overlay = self.show_overlay if draw_overlay is None else draw_overlay
@@ -158,9 +174,13 @@ class BrowserSessionManager:
         return state
 
     async def apply_visuals(
-        self, *, overlay: bool | None = None, cursor: bool | None = None
+        self,
+        *,
+        overlay: bool | None = None,
+        cursor: bool | None = None,
+        redact: bool | None = None,
     ) -> dict[str, Any]:
-        """Turn the on-page overlay / cursor on or off without re-reading the page.
+        """Turn the on-page overlay / cursor / redaction on or off.
 
         Called when the side panel's settings toggle changes, including mid-run.
         """
@@ -168,18 +188,30 @@ class BrowserSessionManager:
             self.show_overlay = overlay
         if cursor is not None:
             self.show_cursor = cursor
+        if redact is not None:
+            self.auto_redact = redact
 
         if self._page is None:
-            return {"overlay": self.show_overlay, "cursor": self.show_cursor}
+            return {
+                "overlay": self.show_overlay,
+                "cursor": self.show_cursor,
+                "redact": self.auto_redact,
+            }
 
         try:
             applied = await self._page.evaluate(
                 dom_module.SET_VISUALS_SCRIPT,
                 {"overlay": self.show_overlay, "cursor": self.show_cursor},
             )
-            return applied if isinstance(applied, dict) else {}
+            result = applied if isinstance(applied, dict) else {}
+            result["redact"] = self.auto_redact
+            return result
         except Exception:
-            return {"overlay": self.show_overlay, "cursor": self.show_cursor}
+            return {
+                "overlay": self.show_overlay,
+                "cursor": self.show_cursor,
+                "redact": self.auto_redact,
+            }
 
     async def ensure_cursor_visible(self, *, x: float | None = None, y: float | None = None) -> None:
         """Create/park the cursor so it is on screen from the first step.
@@ -449,11 +481,14 @@ class BrowserSessionManager:
         # even though navigation is not a pointer action.
         await self._move_cursor(24, 24)
         try:
-            if new_tab:
+            if new_tab and self.tab_scope != "single":
                 page = await page.context.new_page()
                 self._page = page
                 await page.goto(url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms)
             else:
+                # tab_scope="single" (or an in-place navigation): load the URL in
+                # the tab the user already has, never spawn one the agent would
+                # then have to follow.
                 await page.goto(url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms)
         except Exception as exc:
             # Navigation to a slow page should not kill the step; the next

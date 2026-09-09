@@ -5,6 +5,7 @@ import { useI18n } from "../lib/i18n/I18nContext.js";
 import { isSpeechRecognitionSupported, startSpeechRecognition, type SpeechController } from "../lib/speech.js";
 import { isPageContextRequested } from "../lib/intent.js";
 import { ApprovalModeMenu } from "./ApprovalModeMenu.js";
+import type { VisualSettings } from "../hooks/useVisualSettings.js";
 
 const MAX_TEXTAREA_HEIGHT = 132;
 
@@ -13,6 +14,8 @@ export function InputDock({
   isRunning,
   approvalMode,
   onApprovalModeChange,
+  visuals,
+  updateVisuals,
   onSubmit,
   onStop,
 }: {
@@ -20,13 +23,14 @@ export function InputDock({
   isRunning: boolean;
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => void;
+  visuals: VisualSettings;
+  updateVisuals: (patch: Partial<VisualSettings>) => void;
   onSubmit: (prompt: string, contextMode: ContextMode) => void;
   onStop: () => void;
 }) {
   const { t, lang } = useI18n();
   const [value, setValue] = useState("");
   const [contextMode, setContextMode] = useState<ContextMode>("auto");
-  const [autoRedact, setAutoRedact] = useState(true);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const speechRef = useRef<SpeechController | null>(null);
@@ -157,13 +161,13 @@ export function InputDock({
 
             <button
               type="button"
-              onClick={() => setAutoRedact((v) => !v)}
+              onClick={() => updateVisuals({ autoRedact: !visuals.autoRedact })}
               title={t("input.autoRedact")}
               className={`flex h-6 w-6 items-center justify-center rounded-md transition-all active:scale-90 ${
-                autoRedact ? "text-varma-signal" : "text-varma-text-faint hover:text-varma-text-dim"
+                visuals.autoRedact ? "text-varma-signal" : "text-varma-text-faint hover:text-varma-text-dim"
               }`}
             >
-              {autoRedact ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
+              {visuals.autoRedact ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
             </button>
           </div>
 

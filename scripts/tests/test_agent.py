@@ -1,7 +1,7 @@
 """End-to-end agent test against a live browser + live vLLM.
 
 Usage:
-    python scripts/test_agent.py "Search for ISRO on Google" [max_steps]
+    python scripts/tests/test_agent.py "Search for ISRO on Google" [max_steps]
 
 Prereqs:
   * Chrome/Brave running with --remote-debugging-port=9222
@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import AgentLoop, AgentRunConfig, BrowserSessionManager, VLLMClient  # noqa: E402
 

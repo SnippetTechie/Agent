@@ -1,11 +1,14 @@
-"""Latency probe for the native agent's vLLM path. Run: python scripts/probe_llm.py"""
+"""Latency probe for the native agent's vLLM path.
+
+Run: python scripts/probes/probe_llm.py
+"""
 
 import asyncio
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import VLLMClient  # noqa: E402
 from server.agent import prompts  # noqa: E402

@@ -10,7 +10,10 @@
  * the panel can render exactly what the agent saw and did.
  */
 
+import type { HealthStatus } from "../types.js";
+
 const WS_URL = "ws://127.0.0.1:8002/ws/agent";
+const HEALTH_URL = "http://127.0.0.1:8002/health";
 
 // ─── Incoming message types (Server → Extension) ───────────────────────────
 
@@ -86,6 +89,17 @@ export interface WsApprovalRequired {
   step: number;
   thought: string;
   actions: BrowserUseActionPayload[];
+  /** Which gate raised this: manual waits for a click, auto self-resolves. */
+  mode?: "manual" | "auto";
+  /** Seconds the server will wait before giving up (manual mode). */
+  timeout_s?: number;
+}
+
+/** Layer-1 redaction report for the step's page read. */
+export interface WsRedactions {
+  type: "REDACTIONS";
+  step: number;
+  redactions: { tag: string; label: string; count: number }[];
 }
 
 export interface WsFinalResult {
@@ -121,6 +135,7 @@ export type WsServerMessage =
   | WsAction
   | WsStepComplete
   | WsApprovalRequired
+  | WsRedactions
   | WsFinalResult
   | WsError
   | WsStopped;
@@ -136,6 +151,13 @@ export interface WsStartTask {
   show_overlay?: boolean;
   /** Animate the agent cursor + click ripples on the page. */
   show_cursor?: boolean;
+  /** Layer-1 deterministic PII redaction before anything reaches the model. */
+  auto_redact?: boolean;
+  /**
+   * "single" pins the agent to the tab it attached to; "all" lets it open and
+   * follow new tabs (a navigate with new_tab, or a link that spawns one).
+   */
+  tab_scope?: "single" | "all";
 }
 
 export interface WsApprove {
@@ -155,6 +177,7 @@ export interface WsSetVisuals {
   type: "SET_VISUALS";
   overlay?: boolean;
   cursor?: boolean;
+  redact?: boolean;
 }
 
 export type WsClientMessage = WsStartTask | WsApprove | WsDeny | WsStop | WsSetVisuals;
@@ -170,6 +193,8 @@ export interface AgentEventHandlers {
   onAction?: (msg: WsAction) => void;
   onStepComplete?: (msg: WsStepComplete) => void;
   onApprovalRequired?: (msg: WsApprovalRequired) => void;
+  /** On-device redaction report for the step's page read. */
+  onRedactions?: (msg: WsRedactions) => void;
   onFinalResult?: (msg: WsFinalResult) => void;
   onError?: (msg: WsError) => void;
   onStopped?: (msg: WsStopped) => void;
@@ -206,7 +231,13 @@ export class AgentConnection {
   connect(
     task: string,
     approvalMode: "manual" | "auto" | "skip" = "manual",
-    options: { maxSteps?: number; showOverlay?: boolean; showCursor?: boolean } = {}
+    options: {
+      maxSteps?: number;
+      showOverlay?: boolean;
+      showCursor?: boolean;
+      autoRedact?: boolean;
+      tabScope?: "single" | "all";
+    } = {}
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.closed) {
@@ -214,13 +245,25 @@ export class AgentConnection {
         return;
       }
 
+      // The socket can fail in more than one way (error then close, or a close
+      // with no error). Settle the promise exactly once.
+      let settled = false;
+      const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(message));
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+
       try {
         this.ws = new WebSocket(WS_URL);
       } catch (err) {
-        reject(
-          new Error(
-            `WebSocket creation failed: ${err instanceof Error ? err.message : String(err)}`
-          )
+        fail(
+          `WebSocket creation failed: ${err instanceof Error ? err.message : String(err)}`
         );
         return;
       }
@@ -234,20 +277,24 @@ export class AgentConnection {
           ...(options.maxSteps ? { max_steps: options.maxSteps } : {}),
           ...(options.showOverlay !== undefined ? { show_overlay: options.showOverlay } : {}),
           ...(options.showCursor !== undefined ? { show_cursor: options.showCursor } : {}),
+          ...(options.autoRedact !== undefined ? { auto_redact: options.autoRedact } : {}),
+          ...(options.tabScope ? { tab_scope: options.tabScope } : {}),
         });
-        resolve();
+        succeed();
       };
 
-      this.ws.onerror = (event) => {
-        console.error("[agentWS] WebSocket error:", event);
-        reject(
-          new Error(
-            "Could not connect to the agent server. Ensure it is running (python server/receiver.py)."
-          )
+      this.ws.onerror = () => {
+        // A close event follows; the message is deliberately endpoint-agnostic
+        // so it is right whether the receiver is down or refused the socket.
+        fail(
+          "Could not connect to the agent server on ws://127.0.0.1:8002. " +
+            "Start it with: python scripts/start_server.py"
         );
       };
 
       this.ws.onclose = () => {
+        // A close before onopen means the connection never established.
+        fail("The agent server closed the connection before the task started.");
         if (!this.closed) {
           this.handlers.onDisconnect?.();
         }
@@ -280,8 +327,8 @@ export class AgentConnection {
     this.send({ type: "STOP" });
   }
 
-  /** Toggle the on-page overlay / cursor, even while the agent is running. */
-  setVisuals(opts: { overlay?: boolean; cursor?: boolean }): void {
+  /** Toggle the on-page overlay / cursor / redaction, even mid-run. */
+  setVisuals(opts: { overlay?: boolean; cursor?: boolean; redact?: boolean }): void {
     this.send({ type: "SET_VISUALS", ...opts });
   }
 
@@ -333,6 +380,9 @@ export class AgentConnection {
       case "APPROVAL_REQUIRED":
         this.handlers.onApprovalRequired?.(msg);
         break;
+      case "REDACTIONS":
+        this.handlers.onRedactions?.(msg);
+        break;
       case "FINAL_RESULT":
         this.handlers.onFinalResult?.(msg);
         break;
@@ -352,39 +402,28 @@ export class AgentConnection {
  * Quick health-check: can we reach the server, the model and the browser?
  * Mirrors the shape of GET /health on the receiver.
  */
-export async function checkServerHealth(): Promise<{
-  ok: boolean;
-  vllmReachable?: boolean;
-  cdpReachable?: boolean;
-  model?: string;
-  cdpUrl?: string;
-  error?: string;
-}> {
+export async function checkServerHealth(): Promise<HealthStatus> {
   try {
-    const res = await fetch("http://127.0.0.1:8002/health", {
-      signal: AbortSignal.timeout(3000),
-    });
+    const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
+      return { serverUp: false, vllmReachable: false, cdpReachable: false, error: `HTTP ${res.status}` };
     }
     const data = (await res.json()) as {
       vllm?: { reachable: boolean; model: string };
-      cdp?: { reachable: boolean; url: string };
+      cdp?: { reachable: boolean };
     };
     return {
-      ok: true,
-      vllmReachable: data.vllm?.reachable,
-      cdpReachable: data.cdp?.reachable,
+      serverUp: true,
+      vllmReachable: Boolean(data.vllm?.reachable),
+      cdpReachable: Boolean(data.cdp?.reachable),
       model: data.vllm?.model,
-      cdpUrl: data.cdp?.url,
     };
   } catch (err) {
     return {
-      ok: false,
-      error:
-        err instanceof Error
-          ? err.message
-          : "Server unreachable. Start with: python server/receiver.py",
+      serverUp: false,
+      vllmReachable: false,
+      cdpReachable: false,
+      error: err instanceof Error ? err.message : "Server unreachable",
     };
   }
 }

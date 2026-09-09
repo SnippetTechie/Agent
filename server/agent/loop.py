@@ -25,6 +25,14 @@ from .session import BrowserSessionManager, CDPUnavailable
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+# Actions that change page state and are therefore gated by the approval mode.
+# Perception-only actions (scroll/hover/wait/wait_for/read) are always allowed:
+# gating them would stall the run without protecting anything.
+RISKY_ACTIONS: frozenset[str] = frozenset(
+    {"click", "type", "navigate", "press", "go_back"}
+)
+
+
 @dataclass
 class AgentRunConfig:
     """Tunables for one agent run."""
@@ -37,6 +45,16 @@ class AgentRunConfig:
     # After a click/type, give the page a moment before re-reading it.
     settle_seconds: float = 0.15
     done_text_fallback: str = "Task completed."
+
+    # -- approval gate -----------------------------------------------------
+    # "manual" -> pause until the panel clicks Approve/Deny.
+    # "auto"   -> still surface the banner, but resolve without a click.
+    # "skip"   -> execute risky actions immediately (fastest).
+    approval_mode: str = "manual"
+    # How long to wait for an APPROVE/DENY before falling back.
+    approval_timeout: float = 180.0
+    # In "auto" mode, self-approve after this delay if no client responds.
+    auto_approve_delay: float = 1.2
 
 
 @dataclass
@@ -72,14 +90,42 @@ class AgentLoop:
         self._history: list[dict[str, Any]] = []
         self._step_records: list[StepRecord] = []
 
+        # -- approval gate state ------------------------------------------
+        # A pending decision is represented by a future; the WebSocket listener
+        # resolves it when APPROVE/DENY arrives, or the loop resolves it itself
+        # on timeout. ``None`` means "nothing is waiting right now".
+        self._approval_future: asyncio.Future[bool] | None = None
+        self._approval_step: int = 0
+        self._denied = False
+
     # -- control -----------------------------------------------------------
 
     def stop(self) -> None:
         self._stop.set()
+        # Unblock a run parked on an approval prompt so STOP is immediate.
+        self._resolve_approval(False)
+
+    def approve(self) -> None:
+        """Resolve a pending approval as approved (called from the WS listener)."""
+        self._resolve_approval(True)
+
+    def deny(self) -> None:
+        """Resolve a pending approval as denied (called from the WS listener)."""
+        self._denied = True
+        self._resolve_approval(False)
+
+    def _resolve_approval(self, approved: bool) -> None:
+        future = self._approval_future
+        if future is not None and not future.done():
+            future.set_result(approved)
 
     @property
     def stopped(self) -> bool:
         return self._stop.is_set()
+
+    @property
+    def denied(self) -> bool:
+        return self._denied
 
     @property
     def metrics(self) -> dict[str, Any]:
@@ -151,6 +197,19 @@ class AgentLoop:
                 return {"success": False, "result": str(exc), "metrics": self.metrics}
 
             record.observe_ms = self.session.last_observe_ms
+
+            # Report Layer-1 redactions so the panel's audit log reflects what
+            # was actually masked on this page (never the masked values).
+            redactions = state.get("redactions") or []
+            if redactions:
+                await self._emit(
+                    {
+                        "type": "REDACTIONS",
+                        "step": step,
+                        "redactions": redactions,
+                    }
+                )
+
             await self._emit(
                 {
                     "type": "PAGE_STATE",
@@ -267,6 +326,20 @@ class AgentLoop:
                 }
 
             # -- 3. act ----------------------------------------------------
+            # Gate state-changing actions behind the approval mode. This runs
+            # before anything is executed so a denial leaves the page untouched.
+            if self._needs_approval(actions, config):
+                if not await self._await_approval(step, actions, config):
+                    return {
+                        "success": False,
+                        "result": (
+                            "Stopped by user"
+                            if self._stop.is_set()
+                            else "Action denied by user"
+                        ),
+                        "metrics": self.metrics,
+                    }
+
             action_started = time.perf_counter()
             done_payload: dict[str, Any] | None = None
 
@@ -366,6 +439,75 @@ class AgentLoop:
             "metrics": self.metrics,
             "elapsed_ms": round(elapsed_ms, 1),
         }
+
+    # -- approval gate -----------------------------------------------------
+
+    def _needs_approval(self, actions: list[dict[str, Any]], config: AgentRunConfig) -> bool:
+        """True when at least one proposed action is state-changing."""
+        if config.approval_mode == "skip":
+            return False
+        return any(
+            str(a.get("type", "")).lower() in RISKY_ACTIONS for a in actions
+        )
+
+    async def _await_approval(
+        self, step: int, actions: list[dict[str, Any]], config: AgentRunConfig
+    ) -> bool:
+        """Emit APPROVAL_REQUIRED and wait for the user's decision.
+
+        Returns True if the run may proceed. ``skip`` never reaches here.
+        """
+        self._approval_step = step
+        self._approval_future = asyncio.get_running_loop().create_future()
+
+        await self._emit(
+            {
+                "type": "APPROVAL_REQUIRED",
+                "step": step,
+                "thought": prompts.describe_actions(actions),
+                "actions": actions,
+                "mode": config.approval_mode,
+                "timeout_s": round(config.approval_timeout, 1),
+            }
+        )
+
+        future = self._approval_future
+        timeout = config.approval_timeout if config.approval_mode == "manual" else config.auto_approve_delay
+
+        try:
+            approved = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except asyncio.TimeoutError:
+            if config.approval_mode == "auto":
+                # The banner was shown; proceed without waiting for a click.
+                approved = True
+            else:
+                approved = False
+                await self._emit(
+                    {
+                        "type": "ERROR",
+                        "step": step,
+                        "error": (
+                            f"No approval response within {int(config.approval_timeout)}s. "
+                            "The action was not executed."
+                        ),
+                    }
+                )
+        except asyncio.CancelledError:
+            approved = False
+            raise
+        finally:
+            self._approval_future = None
+
+        if not approved:
+            self._denied = True
+            await self._emit(
+                {
+                    "type": "STOPPED",
+                    "step": step,
+                    "reason": "Action denied by user" if not self._stop.is_set() else "User stopped the task",
+                }
+            )
+        return approved
 
     # -- action dispatch ---------------------------------------------------
 

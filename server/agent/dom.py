@@ -25,6 +25,10 @@ EXTRACT_SCRIPT = r"""
   // opts.skipText lets the visual-only refresh skip the expensive full-text
   // clone, since the overlay only needs element boxes.
   const SKIP_TEXT = !!(opts && opts.skipText);
+  // opts.redact === false disables Layer-1 deterministic redaction (the panel's
+  // "Auto-redact" toggle). Default is ON: leaking PII is fatal, and the cost is
+  // a few regex passes over text we already have.
+  const REDACT = !(opts && opts.redact === false);
   const MAX_ELEMENTS = 150;
   const MAX_TEXT = 2500;
   const MAX_LABEL = 70;
@@ -42,6 +46,51 @@ EXTRACT_SCRIPT = r"""
     s = (s || '').replace(/\s+/g, ' ').trim();
     return s.length > n ? s.slice(0, n - 1) + '\u2026' : s;
   };
+
+  // --- Layer 1: deterministic PII detection (0ms, no model involved) -------
+  // Ordered most-specific-first so an Aadhaar number is not first eaten by the
+  // looser credit-card pattern.
+  const PII_PATTERNS = [
+    { tag: 'ID_NUMBER', re: /\b[A-Z]{5}[0-9]{4}[A-Z]\b/g,           label: 'PAN' },
+    { tag: 'ID_NUMBER', re: /\b[0-9]{4}\s?[0-9]{4}\s?[0-9]{4}\b/g,  label: 'Aadhaar' },
+    { tag: 'ID_NUMBER', re: /\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/g,      label: 'SSN' },
+    { tag: 'CREDENTIAL', re: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b/g, label: 'card' },
+    { tag: 'CREDENTIAL', re: /\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, label: 'token' },
+    { tag: 'COORDINATES', re: /\b-?[0-9]{1,3}\.[0-9]{4,}\s*[,;]\s*-?[0-9]{1,3}\.[0-9]{4,}\b/g, label: 'coords' },
+    { tag: 'CREDENTIAL', re: /\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b/g,      label: 'email' },
+  ];
+
+  // Field-name/autocomplete heuristics: a value is secret regardless of format.
+  const SECRET_HINT = /(pass|passwd|pwd|pin|otp|otp_|cvv|cvc|csc|secret|token|api[-_]?key|auth|credential|aadhaar|aadhar|pan[-_]?no|ssn|card[-_]?no|account[-_]?no|ifsc|upi|iban|license|licence|passport)/i;
+  const SECRET_AUTOCOMPLETE = /(current-password|new-password|cc-number|cc-csc|cc-exp|one-time-code|password)/i;
+
+  const isSecretField = (el) => {
+    if (!el || !el.getAttribute) return false;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'password') return true;
+    const ac = el.getAttribute('autocomplete') || '';
+    if (SECRET_AUTOCOMPLETE.test(ac)) return true;
+    const hay = [el.getAttribute('name'), el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder')]
+      .filter(Boolean).join(' ');
+    return SECRET_HINT.test(hay);
+  };
+
+  const redactions = [];
+  const noteRedaction = (tag, label, count) => {
+    if (!count) return;
+    redactions.push({ tag, label, count });
+  };
+
+  const scrubText = (input) => {
+    let text = input || '';
+    if (!REDACT || !text) return text;
+    let total = 0;
+    for (const p of PII_PATTERNS) {
+      text = text.replace(p.re, () => { total += 1; return '[REDACTED_' + p.tag + ']'; });
+    }
+    return text;
+  };
+  // 
 
   const isVisible = (el, rect, style) => {
     if (!rect || rect.width < 4 || rect.height < 4) return false;
@@ -66,9 +115,15 @@ EXTRACT_SCRIPT = r"""
     if (name) parts.push(name);
     if (el.id) parts.push('#' + el.id);
 
-    let text = el.innerText || el.value || el.textContent || '';
-    text = clamp(text, MAX_LABEL);
-    if (text) parts.unshift(text);
+    // A secret field's live value must never become its label. This was a real
+    // leak: a filled password input contributed its plaintext via el.value.
+    if (isSecretField(el)) {
+      parts.unshift('[REDACTED_INPUT_FIELD]');
+    } else {
+      let text = el.innerText || el.value || el.textContent || '';
+      text = scrubText(clamp(text, MAX_LABEL));
+      if (text) parts.unshift(text);
+    }
 
     if (!parts.length) {
       const alt = el.querySelector('img[alt]');
@@ -124,8 +179,16 @@ EXTRACT_SCRIPT = r"""
     };
     if (tag === 'input' || tag === 'textarea' || tag === 'select') {
       // Never leak typed secret values to the model.
-      if (type === 'password') entry.val = '[REDACTED]';
-      else if (el.value) entry.val = clamp(String(el.value), MAX_LABEL);
+      if (isSecretField(el)) {
+        entry.val = '[REDACTED]';
+        entry.secret = true;
+        noteRedaction('CREDENTIAL', kind, 1);
+      } else if (el.value) {
+        const raw = String(el.value);
+        const scrubbed = REDACT ? scrubText(raw) : raw;
+        if (scrubbed !== raw) noteRedaction('CREDENTIAL', kind, 1);
+        entry.val = clamp(scrubbed, MAX_LABEL);
+      }
     }
     if (el.href && tag === 'a') {
       // The full href is long and mostly tracking parameters; the host+path is
@@ -157,14 +220,32 @@ EXTRACT_SCRIPT = r"""
   if (body && !SKIP_TEXT) {
     const clone = body.cloneNode(true);
     clone.querySelectorAll('script,style,noscript,svg,iframe,canvas').forEach(n => n.remove());
+    // Drop secret-field values from the clone before reading text: a password
+    // input's rendered text is not in innerText, but a filled <textarea> is.
+    clone.querySelectorAll('input,textarea').forEach(n => {
+      if (isSecretField(n)) n.value = '';
+    });
     text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+    if (REDACT && text) {
+      const before = text;
+      text = scrubText(text);
+      if (text !== before) noteRedaction('CREDENTIAL', 'page-text', 1);
+    }
   }
   text = clamp(text, MAX_TEXT);
 
   const headings = Array.from(document.querySelectorAll('h1,h2,h3'))
     .slice(0, 12)
-    .map(h => clamp(h.innerText || h.textContent, 70))
+    .map(h => clamp(scrubText(h.innerText || h.textContent), 70))
     .filter(Boolean);
+
+  // Merge duplicate redaction notices so the audit log shows one row per tag.
+  const merged = {};
+  for (const r of redactions) {
+    const key = r.tag + ':' + r.label;
+    if (merged[key]) merged[key].count += r.count;
+    else merged[key] = { ...r };
+  }
 
   return {
     url: location.href,
@@ -174,6 +255,8 @@ EXTRACT_SCRIPT = r"""
     headings,
     elements,
     text,
+    redactions: Object.values(merged),
+    redacted: REDACT,
   };
 })
 """
@@ -478,6 +561,8 @@ def format_state_for_prompt(state: dict, *, max_elements: int = 220) -> str:
             flags.append("expanded")
         if el.get("required"):
             flags.append("required")
+        if el.get("secret"):
+            flags.append("SENSITIVE")
         if el.get("val"):
             flags.append(f"value={el['val']!r}")
         if el.get("href"):

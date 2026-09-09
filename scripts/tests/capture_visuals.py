@@ -5,8 +5,8 @@ bounding boxes) and the agent cursor are injected, so the PNGs show exactly
 what a human watching the browser would see.
 
 Usage:
-    python scripts/capture_visuals.py "Search for ISRO on Google"
-    python scripts/capture_visuals.py "Open wikipedia.org and search for ISRO" --out screenshots/visuals
+    python scripts/tests/capture_visuals.py "Search for ISRO on Google"
+    python scripts/tests/capture_visuals.py "Open wikipedia.org and search for ISRO" --out screenshots/visuals
 
 Output goes to <out>/step-NN-before.png and step-NN-after.png, plus a summary
 of how many boxes were drawn at each stage.
@@ -19,7 +19,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import AgentLoop, AgentRunConfig, BrowserSessionManager, VLLMClient  # noqa: E402
 

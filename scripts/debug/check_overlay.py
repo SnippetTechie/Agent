@@ -1,7 +1,7 @@
 """Diagnose whether the on-page overlay, cursor and click ripple actually render.
 
 Run:
-    python scripts/check_overlay.py
+    python scripts/debug/check_overlay.py
 
 It attaches to the browser on CDP, reads the page (which draws the overlay),
 then inspects the DOM for the injected nodes and reports what it found.
@@ -11,7 +11,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from server.agent import BrowserSessionManager  # noqa: E402
 

@@ -1,7 +1,7 @@
 import type {
   AgentStep,
+  ApprovalMode,
   ApprovalRequest,
-  SuggestionIntent,
   TurnStatus,
 } from "../types.js";
 import type { TranslationKey } from "./i18n/I18nContext.js";
@@ -14,12 +14,13 @@ export function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${counter}`;
 }
 
-export function buildInitialSteps(
-  t: Translate,
-  domain: string,
-  promptText: string,
-  intent?: SuggestionIntent
-): AgentStep[] {
+/**
+ * The four scaffold rows shown the moment a task starts. `promptText`/`intent`
+ * are intentionally not used to vary these: the real server events overwrite
+ * them with measured detail within a step, so branching here would only add
+ * noise that the user sees for ~200 ms.
+ */
+export function buildInitialSteps(t: Translate, domain: string): AgentStep[] {
   return [
     {
       id: nextId("step"),
@@ -56,13 +57,24 @@ export function buildApprovalRequest(
   t: Translate,
   domain: string,
   customActionLabel?: string,
-  customRiskNote?: string
+  customRiskNote?: string,
+  mode: ApprovalMode = "manual",
+  step?: number,
+  timeoutSeconds?: number
 ): ApprovalRequest {
   return {
     id: nextId("approval"),
     actionLabel: customActionLabel || t("approval.actionLabel", { domain }),
     riskNote: customRiskNote || t("approval.riskNote"),
     state: "pending",
+    mode,
+    step,
+    // The server gives up after this; mirror it so the banner can show a
+    // countdown instead of silently hanging.
+    expiresAt:
+      mode === "manual" && typeof timeoutSeconds === "number" && timeoutSeconds > 0
+        ? Date.now() + timeoutSeconds * 1000
+        : undefined,
   };
 }
 
@@ -81,19 +93,4 @@ export function buildSummary(t: Translate, status: TurnStatus, maskedCount: numb
     default:
       return "";
   }
-}
-
-export function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException("Aborted", "AbortError"));
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true }
-    );
-  });
 }

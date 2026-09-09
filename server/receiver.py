@@ -57,6 +57,16 @@ MAX_ACTIONS_PER_STEP = int(os.getenv("AGENT_MAX_ACTIONS_PER_STEP", "3"))
 SHOW_OVERLAY = os.getenv("AGENT_SHOW_OVERLAY", "1") != "0"
 SHOW_CURSOR = os.getenv("AGENT_SHOW_CURSOR", "1") != "0"
 
+# Approval gate. The extension sends a per-run mode; this is only the fallback
+# used when a client does not specify one (direct demo.py runs, curl, tests).
+DEFAULT_APPROVAL_MODE = os.getenv("AGENT_APPROVAL_MODE", "manual").lower()
+APPROVAL_TIMEOUT = float(os.getenv("AGENT_APPROVAL_TIMEOUT", "180"))
+AUTO_APPROVE_DELAY = float(os.getenv("AGENT_AUTO_APPROVE_DELAY", "1.2"))
+
+# Layer-1 deterministic DOM redaction: password/banking fields and card numbers
+# are masked in-page before the text ever reaches the model.
+AUTO_REDACT = os.getenv("AGENT_AUTO_REDACT", "1") != "0"
+
 SCREENSHOTS_DIR = ROOT_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -75,6 +85,7 @@ session = BrowserSessionManager(
     cdp_url=CDP_URL,
     show_overlay=SHOW_OVERLAY,
     show_cursor=SHOW_CURSOR,
+    auto_redact=AUTO_REDACT,
 )
 
 @asynccontextmanager
@@ -214,6 +225,9 @@ async def health() -> dict[str, Any]:
             "max_actions_per_step": MAX_ACTIONS_PER_STEP,
             "overlay": SHOW_OVERLAY,
             "cursor": SHOW_CURSOR,
+            "auto_redact": AUTO_REDACT,
+            "approval_mode": DEFAULT_APPROVAL_MODE,
+            "approval_timeout_s": APPROVAL_TIMEOUT,
         },
         "last_step": {
             "observe_ms": round(session.last_observe_ms, 1),
@@ -350,12 +364,23 @@ async def agent_ws(websocket: WebSocket) -> None:
 
         max_steps = int(init.get("max_steps") or MAX_STEPS)
 
+        # Approval mode decides whether state-changing actions pause for the
+        # panel. Unknown values fall back to "manual" (the safe default).
+        approval_mode = str(init.get("approval_mode") or DEFAULT_APPROVAL_MODE).lower()
+        if approval_mode not in ("manual", "auto", "skip"):
+            approval_mode = "manual"
+
         # The side panel's settings decide the visual debug layer. Apply before
         # the run starts so the first perception already draws correctly.
         await session.apply_visuals(
             overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
             cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
+            redact=bool(init.get("auto_redact", AUTO_REDACT)),
         )
+
+        # Tab scope: "single" pins the run to the attached tab.
+        tab_scope = str(init.get("tab_scope") or "single").lower()
+        session.tab_scope = "all" if tab_scope == "all" else "single"
 
         async def emit(event: dict[str, Any]) -> None:
             await websocket.send_json(event)
@@ -366,20 +391,28 @@ async def agent_ws(websocket: WebSocket) -> None:
             task=task,
             max_steps=max_steps,
             max_actions_per_step=MAX_ACTIONS_PER_STEP,
+            approval_mode=approval_mode,
+            approval_timeout=APPROVAL_TIMEOUT,
+            auto_approve_delay=AUTO_APPROVE_DELAY,
         )
 
         async def listen() -> None:
-            """Handle STOP and live visual toggles while the agent runs."""
+            """Handle STOP, APPROVE/DENY and live visual toggles mid-run."""
             try:
                 while True:
                     msg = await websocket.receive_json()
                     kind = msg.get("type")
                     if kind == "STOP" and loop is not None:
                         loop.stop()
+                    elif kind == "APPROVE" and loop is not None:
+                        loop.approve()
+                    elif kind == "DENY" and loop is not None:
+                        loop.deny()
                     elif kind == "SET_VISUALS":
                         applied = await session.apply_visuals(
                             overlay=msg.get("overlay"),
                             cursor=msg.get("cursor"),
+                            redact=msg.get("redact"),
                         )
                         # Re-draw immediately so toggling on mid-run is visible.
                         if applied.get("overlay") and loop is not None:

@@ -2,14 +2,21 @@
   "name": "sih26171-browser-agent",
   "private": true,
   "version": "0.1.0",
+  "description": "V.A.R.M.A — on-device perception for a light-weight browser agent (SIH26171 / ISRO)",
   "scripts": {
     "dev": "pnpm --filter extension dev",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter extension build",
     "start": "python scripts/start_server.py",
     "server": "python scripts/start_server.py",
-    "schema:sync": "bash scripts/sync-schemas.sh",
-    "eval": "pnpm --filter evaluation exec tsx src/report.ts",
-    "test": "pnpm --filter evaluation exec vitest run"
+    "probe:llm": "python scripts/probes/probe_llm.py",
+    "probe:latency": "python scripts/probes/probe_latency.py",
+    "probe:throughput": "python scripts/probes/probe_throughput.py",
+    "probe:schema": "python scripts/probes/probe_schema.py",
+    "test:agent": "python scripts/tests/test_agent.py",
+    "test:ws": "python scripts/tests/test_ws.py",
+    "test:approval": "python scripts/tests/test_approval.py",
+    "test:redaction": "python scripts/tests/test_redaction.py",
+    "test": "python scripts/tests/test_approval.py && python scripts/tests/test_redaction.py"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

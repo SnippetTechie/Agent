@@ -1,7 +1,7 @@
 """Integration test: drive /ws/agent exactly like the extension does.
 
 Usage:
-    python scripts/test_ws.py "Search for ISRO on Google"
+    python scripts/tests/test_ws.py "Search for ISRO on Google"
 """
 
 import asyncio

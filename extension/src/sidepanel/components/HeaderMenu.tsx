@@ -3,8 +3,8 @@ import { Boxes, Check, ChevronRight, EllipsisVertical, Languages, Layers, Volume
 import { LANGUAGES } from "../lib/i18n/translations.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import { useMuted } from "../hooks/useMuted.js";
-import { useTabScope } from "../hooks/useTabScope.js";
 import type { VisualSettings } from "../hooks/useVisualSettings.js";
+import type { TabScope } from "../types.js";
 
 /**
  * Matches the reference's "⋮ → Language >" nested-flyout pattern, but as
@@ -14,13 +14,16 @@ import type { VisualSettings } from "../hooks/useVisualSettings.js";
 export function HeaderMenu({
   visuals,
   updateVisuals,
+  tabScope,
+  setTabScope,
 }: {
   visuals: VisualSettings;
   updateVisuals: (patch: Partial<VisualSettings>) => void;
+  tabScope: TabScope;
+  setTabScope: (scope: TabScope) => void;
 }) {
   const { lang, setLang, t } = useI18n();
   const [muted, toggleMuted] = useMuted();
-  const [tabScope, setTabScope] = useTabScope();
   const [open, setOpen] = useState(false);
   const [languageOpen, setLanguageOpen] = useState(false);
   const [tabScopeOpen, setTabScopeOpen] = useState(false);
@@ -41,6 +44,11 @@ export function HeaderMenu({
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
+  const itemClass =
+    "flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text";
+  const subItemClass =
+    "flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text";
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -54,26 +62,23 @@ export function HeaderMenu({
 
       {open && (
         <div className="animate-varma-pop absolute right-0 top-9 z-30 w-52 overflow-hidden rounded-lg border border-varma-border-strong bg-varma-raised py-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]">
-          <button
-            type="button"
-            onClick={toggleMuted}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
-          >
+          <button type="button" onClick={toggleMuted} className={itemClass}>
             {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
             {muted ? t("header.unmute") : t("header.mute")}
           </button>
 
-          {/* Tab Access Scope setting */}
+          {/* Tab Access Scope: which tabs the agent may drive. */}
           <button
             type="button"
             onClick={() => {
               setTabScopeOpen((v) => !v);
               setLanguageOpen(false);
+              setVisualsOpen(false);
             }}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+            className={itemClass}
           >
             <Layers className="h-3.5 w-3.5 text-varma-signal" />
-            <span className="flex-1">Tab Access Scope</span>
+            <span className="flex-1">{t("header.tabScope")}</span>
             <ChevronRight
               className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${tabScopeOpen ? "rotate-90" : ""}`}
             />
@@ -92,11 +97,9 @@ export function HeaderMenu({
                     setOpen(false);
                     setTabScopeOpen(false);
                   }}
-                  className="flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+                  className={subItemClass}
                 >
-                  <span className="flex items-center gap-1.5">
-                    Current tab only
-                  </span>
+                  <span>{t("header.tabScopeSingle")}</span>
                   {tabScope === "single" && <Check className="h-3 w-3 text-varma-signal" />}
                 </button>
                 <button
@@ -106,11 +109,9 @@ export function HeaderMenu({
                     setOpen(false);
                     setTabScopeOpen(false);
                   }}
-                  className="flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+                  className={subItemClass}
                 >
-                  <span className="flex items-center gap-1.5">
-                    All tabs
-                  </span>
+                  <span>{t("header.tabScopeAll")}</span>
                   {tabScope === "all" && <Check className="h-3 w-3 text-varma-signal" />}
                 </button>
               </div>
@@ -122,8 +123,9 @@ export function HeaderMenu({
             onClick={() => {
               setLanguageOpen((v) => !v);
               setTabScopeOpen(false);
+              setVisualsOpen(false);
             }}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+            className={itemClass}
           >
             <Languages className="h-3.5 w-3.5" />
             <span className="flex-1">{t("header.language")}</span>
@@ -147,7 +149,7 @@ export function HeaderMenu({
                       setOpen(false);
                       setLanguageOpen(false);
                     }}
-                    className="flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+                    className={subItemClass}
                   >
                     {l.nativeName}
                     {l.code === lang && <Check className="h-3 w-3 text-varma-signal" />}
@@ -157,7 +159,7 @@ export function HeaderMenu({
             </div>
           </div>
 
-          {/* On-page visual layer (bounding boxes + agent cursor) */}
+          {/* On-page visual layer (bounding boxes + agent cursor + redaction) */}
           <button
             type="button"
             onClick={() => {
@@ -165,10 +167,10 @@ export function HeaderMenu({
               setLanguageOpen(false);
               setTabScopeOpen(false);
             }}
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
+            className={itemClass}
           >
             <Boxes className="h-3.5 w-3.5 text-varma-signal" />
-            <span className="flex-1">On-page visuals</span>
+            <span className="flex-1">{t("header.visuals")}</span>
             <ChevronRight
               className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${visualsOpen ? "rotate-90" : ""}`}
             />
@@ -180,40 +182,32 @@ export function HeaderMenu({
           >
             <div className="overflow-hidden">
               <div className="border-t border-varma-border py-1">
-                <button
-                  type="button"
-                  onClick={() => updateVisuals({ showOverlay: !visuals.showOverlay })}
-                  className="flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
-                >
-                  <span className="flex items-center gap-1.5">
-                    Bounding boxes
-                    <span className="text-varma-text-faint">
-                      {visuals.showOverlay ? "on" : "off"}
+                {(
+                  [
+                    ["showOverlay", "header.visualsBoxes"],
+                    ["showCursor", "header.visualsCursor"],
+                    ["autoRedact", "header.visualsRedact"],
+                  ] as const
+                ).map(([key, labelKey]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => updateVisuals({ [key]: !visuals[key] })}
+                    className={subItemClass}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {t(labelKey)}
+                      <span className="text-varma-text-faint">
+                        {visuals[key] ? t("header.on") : t("header.off")}
+                      </span>
                     </span>
-                  </span>
-                  {visuals.showOverlay ? (
-                    <Check className="h-3 w-3 text-varma-signal" />
-                  ) : (
-                    <span className="h-3 w-3 rounded-sm border border-varma-border" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateVisuals({ showCursor: !visuals.showCursor })}
-                  className="flex w-full items-center justify-between py-1.5 pl-9 pr-3 text-left text-[12px] text-varma-text-dim transition-colors hover:bg-white/[0.06] hover:text-varma-text"
-                >
-                  <span className="flex items-center gap-1.5">
-                    Agent cursor
-                    <span className="text-varma-text-faint">
-                      {visuals.showCursor ? "on" : "off"}
-                    </span>
-                  </span>
-                  {visuals.showCursor ? (
-                    <Check className="h-3 w-3 text-varma-signal" />
-                  ) : (
-                    <span className="h-3 w-3 rounded-sm border border-varma-border" />
-                  )}
-                </button>
+                    {visuals[key] ? (
+                      <Check className="h-3 w-3 text-varma-signal" />
+                    ) : (
+                      <span className="h-3 w-3 rounded-sm border border-varma-border" />
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
           </div>

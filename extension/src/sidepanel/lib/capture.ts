@@ -12,7 +12,6 @@
 
 const RECEIVER_BASE = "http://127.0.0.1:8002";
 const CHAT_URL = `${RECEIVER_BASE}/chat`;
-const HEALTH_URL = `${RECEIVER_BASE}/health`;
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -70,31 +69,4 @@ export interface HealthStatus {
   cdpReachable: boolean;
   model?: string;
   error?: string;
-}
-
-/** Check whether the model and the browser are both reachable. */
-export async function checkHealth(): Promise<HealthStatus> {
-  try {
-    const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) {
-      return { ok: false, vllmReachable: false, cdpReachable: false, error: `HTTP ${res.status}` };
-    }
-    const data = (await res.json()) as {
-      vllm?: { reachable: boolean; model: string };
-      cdp?: { reachable: boolean };
-    };
-    return {
-      ok: true,
-      vllmReachable: Boolean(data.vllm?.reachable),
-      cdpReachable: Boolean(data.cdp?.reachable),
-      model: data.vllm?.model,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      vllmReachable: false,
-      cdpReachable: false,
-      error: err instanceof Error ? err.message : "Server unreachable",
-    };
-  }
 }

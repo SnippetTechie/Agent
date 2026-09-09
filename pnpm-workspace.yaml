@@ -1,7 +1,5 @@
 packages:
   - extension
-  - shared
-  - evaluation
 allowBuilds:
   esbuild: true
   protobufjs: true

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { TRANSLATIONS, interpolate, type LanguageCode, type Translations } from "./translations.js";
-import { loadState, saveState } from "../storage.js";
+import { loadLocalState, saveLocalState } from "../storage.js";
 
 const LANG_STORAGE_KEY = "varma.language.v1";
 
@@ -35,7 +35,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    loadState<LanguageCode>(LANG_STORAGE_KEY).then((saved) => {
+    loadLocalState<LanguageCode>(LANG_STORAGE_KEY).then((saved) => {
       if (!cancelled && saved && saved in TRANSLATIONS) setLangState(saved);
     });
     return () => {
@@ -45,7 +45,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLang = useCallback((l: LanguageCode) => {
     setLangState(l);
-    void saveState(LANG_STORAGE_KEY, l);
+    void saveLocalState(LANG_STORAGE_KEY, l);
   }, []);
 
   const t = useCallback(
