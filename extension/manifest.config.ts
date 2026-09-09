@@ -46,6 +46,21 @@ export default defineManifest({
     128: "public/icons/icon128.png",
   },
   content_security_policy: {
-    extension_pages: "script-src 'self'; object-src 'self';",
+    // script-src 'self' keeps extension scripts locked down.
+    // connect-src is an explicit allowlist once specified at all — it does
+    // NOT fall back to "everything else stays open" for what's omitted, so
+    // every origin the side panel's own fetch() calls ever hit must be
+    // listed here or those requests get silently blocked:
+    //   - 127.0.0.1/localhost:8002 -> lib/capture.ts (screenshot + chat POSTs
+    //     to server/receiver.py)
+    //   - 127.0.0.1/localhost:8000 -> not currently called directly by the
+    //     extension (receiver.py calls vLLM itself, server-side), included
+    //     for parity with host_permissions in case that ever changes
+    //   - wss/https://www.google.com -> Chrome's Web Speech API
+    //     (webkitSpeechRecognition) streams audio over a WebSocket to
+    //     Google's speech service internally; without this, recognition
+    //     starts but immediately errors with no transcript
+    extension_pages:
+      "script-src 'self'; object-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 http://127.0.0.1:8002 http://localhost:8002 wss://www.google.com https://www.google.com;",
   },
 });

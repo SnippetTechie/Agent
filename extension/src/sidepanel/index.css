@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Bengali:wght@400;500;600;700&family=Noto+Sans+Telugu:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600;700&family=Noto+Sans+Gujarati:wght@400;500;600;700&family=Noto+Sans+Kannada:wght@400;500;600;700&family=Noto+Sans+Malayalam:wght@400;500;600;700&family=Noto+Sans+Oriya:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 /*
@@ -36,6 +37,19 @@ body {
     -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Indic script font switching — keyed off <html lang> which I18nContext
+   sets on every language change. Unlayered so these win over any Tailwind
+   font-family utility regardless of specificity. Each locale gets its own
+   Noto Sans family; hi and mr share Devanagari script. */
+:lang(hi), :lang(mr) { font-family: 'Noto Sans Devanagari', sans-serif; }
+:lang(gu)            { font-family: 'Noto Sans Gujarati', sans-serif; }
+:lang(kn)            { font-family: 'Noto Sans Kannada', sans-serif; }
+:lang(ml)            { font-family: 'Noto Sans Malayalam', sans-serif; }
+:lang(ta)            { font-family: 'Noto Sans Tamil', sans-serif; }
+:lang(te)            { font-family: 'Noto Sans Telugu', sans-serif; }
+:lang(or)            { font-family: 'Noto Sans Oriya', sans-serif; }
+:lang(bn)            { font-family: 'Noto Sans Bengali', sans-serif; }
 
 .font-mono-tech {
   font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;

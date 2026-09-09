@@ -60,6 +60,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      // sidepanel.html is auto-registered by crx() from manifest.side_panel.
+      // mic-permission.html is a standalone tab-only page, not referenced by
+      // the manifest or imported from any bundled entry, so it needs to be
+      // listed explicitly to be built at all (see lib/speech.ts).
+      input: {
+        "mic-permission": "src/sidepanel/mic-permission.html",
+      },
+    },
   },
   server: {
     port: 5173,
