@@ -85,6 +85,11 @@ PORT = int(os.getenv("RECEIVER_PORT", "8002"))
 # path is unavailable and everything else still works.
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
 VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4-12b")
+# The name the operator asked for, kept separately from llm.model because
+# resolve_model() silently rewrites llm.model to whatever is actually serving.
+# Comparing against this is what makes "your configured model is not the model
+# answering" visible instead of an invisible fallback.
+CONFIGURED_VLLM_MODEL = VLLM_MODEL
 VLLM_MAX_TOKENS = int(os.getenv("VLLM_MAX_TOKENS", "512"))
 
 GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", "http://127.0.0.1:8000/v1")
@@ -501,7 +506,10 @@ async def model_catalog() -> dict[str, Any]:
     # A wrong alias is reported explicitly. vLLM's model resolver falls back to
     # the first served model, which silently hides a typo - the classic "why is
     # the model answering nonsense" symptom.
-    reasoning_alias_ok = (not reasoning_models) or (llm.model in reasoning_models)
+    # Compared against the CONFIGURED name, not llm.model, which resolve_model()
+    # may already have rewritten to the first served model. Otherwise a typo'd
+    # VLLM_MODEL reports alias_ok=true and the mismatch stays invisible.
+    reasoning_alias_ok = (not reasoning_models) or (CONFIGURED_VLLM_MODEL in reasoning_models)
     precision_alias_ok = (not precision_models) or (grounding_llm.model in precision_models)
 
     declared = _known_models()
@@ -532,6 +540,7 @@ async def model_catalog() -> dict[str, Any]:
             "reasoning": {
                 "base_url": VLLM_BASE_URL,
                 "model": llm.model,
+                "configured_model": CONFIGURED_VLLM_MODEL,
                 "reachable": vllm_reachable(),
                 "available_models": reasoning_models,
                 "alias_ok": reasoning_alias_ok,
@@ -590,6 +599,8 @@ async def health() -> dict[str, Any]:
             "reasoning_ready": catalog["roles"]["reasoning"]["reachable"],
             "precision_ready": caps["precision_ready"],
             "precision_source": caps["precision_source"],
+            "configured_model": CONFIGURED_VLLM_MODEL,
+            "active_model": llm.model,
         },
         "last_step": {
             "observe_ms": round(session.last_observe_ms, 1),
