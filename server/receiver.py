@@ -41,13 +41,49 @@ from server.agent.session import CDPUnavailable  # noqa: E402
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _load_dotenv(path: Path) -> None:
+    """Minimal stdlib-only .env loader.
+
+    Never overrides a variable already present in the environment, so an
+    explicit shell export always wins over the file. Values are taken verbatim
+    apart from surrounding quotes; ``#`` comments and blank lines are skipped.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+# Load before any setting is read below.
+ENV_FILE = ROOT_DIR / "server" / ".env"
+_load_dotenv(ENV_FILE)
+
 HOST = os.getenv("RECEIVER_HOST", "127.0.0.1")
 PORT = int(os.getenv("RECEIVER_PORT", "8002"))
 
-# vLLM. For a remote GPU box, tunnel first: ssh -L 8000:localhost:8000 user@host
+# vLLM. For a remote GPU box, tunnel first:
+#   ssh -p 2222 -L 8000:localhost:8000 -L 8001:localhost:8001 user@host
+#
+# Two endpoints, two roles:
+#   :8000  reasoning / screen understanding  (gemma4)
+#   :8001  precision mouse grounding         (groundnext)
+# The grounding endpoint is optional: if it is not served, only the precision
+# path is unavailable and everything else still works.
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
-VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma-3")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4-12b")
 VLLM_MAX_TOKENS = int(os.getenv("VLLM_MAX_TOKENS", "512"))
+
+GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", "http://127.0.0.1:8001/v1")
+GROUNDING_MODEL = os.getenv("GROUNDING_MODEL", "groundnext-7b")
+GROUNDING_MAX_TOKENS = int(os.getenv("GROUNDING_MAX_TOKENS", "128"))
+GROUNDING_ENABLED = os.getenv("GROUNDING_ENABLED", "1") != "0"
 
 # Chrome DevTools Protocol endpoint of the browser the user is already using.
 CDP_URL = os.getenv("CDP_URL", "http://localhost:9222")
@@ -81,6 +117,15 @@ llm = VLLMClient(
     temperature=0.0,
 )
 
+# Same client class, different endpoint. Grounding wants near-greedy sampling and
+# a short output budget: its replies are a single tool call, never prose.
+grounding_llm = VLLMClient(
+    base_url=GROUNDING_BASE_URL,
+    model=GROUNDING_MODEL,
+    max_tokens=GROUNDING_MAX_TOKENS,
+    temperature=0.0,
+)
+
 session = BrowserSessionManager(
     cdp_url=CDP_URL,
     show_overlay=SHOW_OVERLAY,
@@ -93,6 +138,7 @@ async def lifespan(app: FastAPI):
     """Own the shared HTTP and CDP connections for the process lifetime."""
     yield
     await llm.aclose()
+    await grounding_llm.aclose()
     await session.disconnect()
 
 
@@ -120,9 +166,15 @@ def _port_open(url: str, default_port: int) -> bool:
     except Exception:
         return False
 
-
 def vllm_reachable() -> bool:
     return _port_open(VLLM_BASE_URL, 8000)
+
+
+def grounding_reachable() -> bool:
+    """Whether the precision-grounding endpoint is serving right now."""
+    if not GROUNDING_ENABLED:
+        return False
+    return _port_open(GROUNDING_BASE_URL, 8001)
 
 
 def cdp_reachable() -> bool:
@@ -206,6 +258,21 @@ def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     models = await llm.list_models() if vllm_reachable() else []
+    grounding_models = await grounding_llm.list_models() if grounding_reachable() else []
+
+    # Report a wrong alias explicitly. vLLM's resolver falls back to the first
+    # served model, which silently hides a typo'd model name — the classic
+    # "why is the model answering nonsense" symptom. Say it out loud instead.
+    grounding_state: dict[str, Any] = {
+        "base_url": GROUNDING_BASE_URL,
+        "model": grounding_llm.model,
+        "enabled": GROUNDING_ENABLED,
+        "reachable": grounding_reachable(),
+        "available_models": grounding_models,
+    }
+    if grounding_models:
+        grounding_state["alias_ok"] = grounding_llm.model in grounding_models
+
     return {
         "status": "ok",
         "engine": "varma-native-cdp",
@@ -215,6 +282,7 @@ async def health() -> dict[str, Any]:
             "reachable": vllm_reachable(),
             "available_models": models,
         },
+        "grounding": grounding_state,
         "cdp": {
             "url": CDP_URL,
             "reachable": cdp_reachable(),

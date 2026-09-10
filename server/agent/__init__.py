@@ -18,5 +18,18 @@ Target budget: 1-3s per step with a 12B-class model on a single A6000.
 from .session import BrowserSessionManager
 from .loop import AgentLoop, AgentRunConfig
 from .llm import VLLMClient
+from .grounding import (
+    GroundingResult,
+    build_grounding_prompt,
+    parse_grounding_response,
+)
 
-__all__ = ["BrowserSessionManager", "AgentLoop", "AgentRunConfig", "VLLMClient"]
+__all__ = [
+    "BrowserSessionManager",
+    "AgentLoop",
+    "AgentRunConfig",
+    "VLLMClient",
+    "GroundingResult",
+    "build_grounding_prompt",
+    "parse_grounding_response",
+]
