@@ -1,0 +1,6 @@
+packages:
+  - extension
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+  tesseract.js: true

@@ -52,66 +52,13 @@ export interface RedactionNotice {
   count: number;
 }
 
-/**
- * A model the server can be asked for, as advertised by GET /models.
- *
- * The catalog is the server's, not the panel's: the panel may only offer models
- * the operator actually loaded. A model that cannot accept an image is never
- * offered for game mode, because grounding needs to see the screen.
- */
-export interface ModelInfo {
-  id: string;
-  /** Can accept an image and therefore ground a point for game mode. */
-  vision: boolean;
-  modes: AgentMode[];
-  tasks: string[];
-  /** The model the panel is currently using for reasoning. */
-  selected?: boolean;
-  /** True when a foreign launcher owns the endpoint and this was not declared. */
-  undeclared?: boolean;
-}
-
-/** One model role (reasoning / precision) as the server reports it. */
-export interface ModelRole {
-  base_url: string;
-  model: string;
-  /** The name the operator configured, which may differ from what is serving. */
-  configured_model?: string;
-  reachable: boolean;
-  enabled?: boolean;
-  available_models: string[];
-  alias_ok?: boolean;
-  /**
-   * "ready" | "loading" | "disabled". The panel distinguishes these because
-   * "switched off" and "not loaded yet" need different words and different
-   * actions from the user.
-   */
-  load_state?: "ready" | "loading" | "disabled";
-  /** "dedicated" | "reasoning_vision" | "disabled" | "no_vision" | "unreachable". */
-  source?: string;
-}
-
-/** What the server can currently do, and why not when it cannot. */
-export interface ServerCapabilities {
-  normal: string[];
-  game: string[];
-  precision_ready: boolean;
-  precision_reason: string;
-  precision_source?: string;
-  precision_model?: string | null;
-}
-
-/**
- * The full picture: which model is loaded, what it can do, and what is wrong.
- * Mirrors GET /models on the receiver.
- */
-export interface ModelStatus {
+/** Reachability of the receiver, the model and the browser. */
+export interface HealthStatus {
+  /** True when the receiver itself answered. */
   serverUp: boolean;
-  catalog: ModelInfo[];
-  roles: { reasoning?: ModelRole; precision?: ModelRole };
-  capabilities?: ServerCapabilities;
+  vllmReachable: boolean;
   cdpReachable: boolean;
-  /** Populated only when the receiver itself could not be reached. */
+  model?: string;
   error?: string;
 }
 
@@ -126,17 +73,6 @@ export type TurnStatus =
 export type TurnMode = "chat" | "vision";
 export type ContextMode = "auto" | "page" | "chat";
 export type TabScope = "single" | "all";
-
-/**
- * Which agent loop drives the run.
- *
- * - normal: the DOM loop. Reasons over an indexed element map and clicks by
- *   index. Cheap, exact, and the right tool for browsing, search and messaging.
- * - game: the precision loop. Takes a screenshot and grounds a click to a pixel
- *   coordinate, which is the only way to drive a board or a canvas that exposes
- *   no useful DOM.
- */
-export type AgentMode = "normal" | "game";
 
 export interface AgentTurn {
   id: string;
