@@ -22,6 +22,7 @@ from typing import Any, Callable
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from . import dom as dom_module
+from . import vision
 
 
 class CDPUnavailable(RuntimeError):
@@ -84,6 +85,18 @@ class BrowserSessionManager:
         if self._page is None:
             raise CDPUnavailable("No page attached - call connect() first")
         return self._page
+
+    def current_url(self) -> str:
+        """The attached tab's URL, or "" when nothing is attached yet.
+
+        Reporting the tab is not a reason to raise: a caller that only wants a
+        label should get an empty string, not a CDPUnavailable that turns into a
+        failed connection before the run has even started.
+        """
+        try:
+            return self._page.url if self._page is not None else ""
+        except Exception:
+            return ""
 
     async def connect(self) -> Page:
         """Connect (or reuse) the CDP session and return the active page."""
@@ -516,6 +529,182 @@ class BrowserSessionManager:
         await self._settle()
         self.last_action_ms = (time.perf_counter() - started) * 1000.0
         return {"ok": True, "action": "type", "index": index, "label": label, "text": text, "submit": submit}
+
+    # -- pointer actions at absolute coordinates (game mode) ---------------
+    #
+    # The DOM actions above resolve an element index to a box and click its
+    # centre; a game board has no such element. Game mode grounds a point on a
+    # screenshot instead, so these take raw viewport pixels.
+    #
+    # The cursor still glides and ripples exactly as it does for a DOM click:
+    # "the agent clicked that square" is only legible to a human watching if the
+    # movement is visible, and at 1-2s per grounded step it is the only feedback
+    # the demo has.
+
+    async def screenshot(self, *, scale: float = 1.0) -> dict[str, Any]:
+        """Capture the viewport as a PNG plus its true pixel dimensions.
+
+        Captured at CSS scale deliberately. Grounding error was measured to grow
+        with image size (2.1px mean at 600x400, 10.9px at 1000x700), so a 2x
+        device-pixel-ratio capture would double the error for no gain - the click
+        is mapped back through the same scale either way.
+        """
+        page = await self.connect()
+        started = time.perf_counter()
+        try:
+            data = await page.screenshot(type="png", scale="css" if scale == 1.0 else "device")
+        except TypeError:
+            # Playwright older than 1.31 has no scale kwarg on screenshot().
+            data = await page.screenshot(type="png")
+
+        size = vision.image_size(data)
+        if size is None:
+            # Fall back to the layout viewport, which is what CDP used.
+            viewport = await page.evaluate(
+                "() => ({w: window.innerWidth, h: window.innerHeight})"
+            )
+            width, height = int(viewport["w"]), int(viewport["h"])
+        else:
+            width, height = size
+
+        self.last_observe_ms = (time.perf_counter() - started) * 1000.0
+        return {
+            "bytes": data,
+            "width": width,
+            "height": height,
+            "scale": scale,
+            "capture_ms": round(self.last_observe_ms, 1),
+        }
+
+    async def page_context(self, *, max_text: int = 1200) -> dict[str, Any]:
+        """Url, title and a short slice of visible text.
+
+        This is what lets the model notice "Checkmate", "You win" or
+        "Congratulations" without being able to read the board itself.
+        """
+        if self._page is None:
+            return {"url": "", "title": "", "text": ""}
+        try:
+            context = await self._page.evaluate(
+                """(limit) => {
+                    const body = document.body;
+                    let text = '';
+                    if (body) {
+                        const clone = body.cloneNode(true);
+                        clone.querySelectorAll('script,style,noscript,svg,iframe').forEach(n => n.remove());
+                        text = (clone.innerText || clone.textContent || '')
+                            .replace(/\n{3,}/g, '\n\n').trim().slice(0, limit);
+                    }
+                    return { url: location.href, title: document.title, text: text };
+                }""",
+                max_text,
+            )
+            return context if isinstance(context, dict) else {"url": "", "title": "", "text": ""}
+        except Exception:
+            return {"url": "", "title": "", "text": ""}
+
+    async def click_at(
+        self,
+        x: int,
+        y: int,
+        *,
+        double: bool = False,
+        button: str = "left",
+        hover_only: bool = False,
+    ) -> dict[str, Any]:
+        """Click a raw viewport coordinate."""
+        started = time.perf_counter()
+        x, y = await self._clamp_to_viewport(x, y)
+        await self._glide_cursor(x, y)
+        await asyncio.sleep(0.06)
+
+        if hover_only:
+            await self.page.mouse.move(x, y)
+            await asyncio.sleep(0.08)
+            self.last_action_ms = (time.perf_counter() - started) * 1000.0
+            return {"ok": True, "action": "hover", "x": x, "y": y}
+
+        await self.page.mouse.click(x, y, button=button, click_count=2 if double else 1)
+        await self._move_cursor(x, y, ripple=True)
+        await self._settle()
+        self.last_action_ms = (time.perf_counter() - started) * 1000.0
+        return {
+            "ok": True,
+            "action": "double_click" if double else ("right_click" if button == "right" else "click"),
+            "x": x,
+            "y": y,
+        }
+
+    async def drag_to(self, x1: int, y1: int, x2: int, y2: int) -> dict[str, Any]:
+        """Press at one point, move, release at another.
+
+        The move is broken into intermediate positions because a single jump can
+        be dropped by drag-and-drop handlers that require a mousemove while the
+        button is held - a real, observed failure on HTML5 boards.
+        """
+        started = time.perf_counter()
+        x1, y1 = await self._clamp_to_viewport(x1, y1)
+        x2, y2 = await self._clamp_to_viewport(x2, y2)
+
+        page = self.page
+        await self._glide_cursor(x1, y1)
+        await page.mouse.move(x1, y1)
+        await page.mouse.down()
+        await asyncio.sleep(0.08)
+        steps = 8
+        for index in range(1, steps + 1):
+            mid_x = x1 + (x2 - x1) * index / steps
+            mid_y = y1 + (y2 - y1) * index / steps
+            await page.mouse.move(mid_x, mid_y)
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.08)
+        await page.mouse.up()
+        await self._move_cursor(x2, y2, ripple=True)
+        await self._settle()
+        self.last_action_ms = (time.perf_counter() - started) * 1000.0
+        return {"ok": True, "action": "drag", "x": x1, "y": y1, "x2": x2, "y2": y2}
+
+    async def type_text_at(self, text: str, *, submit: bool = False, clear: bool = True) -> dict[str, Any]:
+        """Type into whatever currently has focus.
+
+        Game mode clicks a cell first and then types, so the target is defined by
+        focus rather than by an element index. If nothing focusable is active the
+        keystrokes simply land on the document, which is the honest behaviour -
+        inventing a target here would type into the wrong field.
+        """
+        started = time.perf_counter()
+        page = self.page
+        if clear:
+            try:
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Backspace")
+            except Exception:
+                pass
+        if text:
+            await page.keyboard.type(text, delay=18)
+        if submit:
+            await asyncio.sleep(0.05)
+            await page.keyboard.press("Enter")
+        await self._settle()
+        self.last_action_ms = (time.perf_counter() - started) * 1000.0
+        return {"ok": True, "action": "type", "text": text, "submit": submit}
+
+    async def _clamp_to_viewport(self, x: int, y: int) -> tuple[int, int]:
+        """Keep a grounded point inside the layout viewport.
+
+        A click outside the viewport is a scroll-into-view or a mis-grounding,
+        never a legitimate action, and CDP would reject it with a confusing
+        protocol error.
+        """
+        try:
+            viewport = await self.page.evaluate(
+                "() => ({w: window.innerWidth, h: window.innerHeight})"
+            )
+            width = max(1, int(viewport["w"]) - 1)
+            height = max(1, int(viewport["h"]) - 1)
+        except Exception:
+            return int(x), int(y)
+        return max(0, min(int(x), width)), max(0, min(int(y), height))
 
     async def press(self, key: str) -> dict[str, Any]:
         started = time.perf_counter()
