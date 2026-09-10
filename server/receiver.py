@@ -33,7 +33,14 @@ from fastapi.responses import FileResponse, JSONResponse
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from server.agent import AgentLoop, AgentRunConfig, BrowserSessionManager, VLLMClient  # noqa: E402
+from server.agent import (  # noqa: E402
+    AgentLoop,
+    AgentRunConfig,
+    BrowserSessionManager,
+    GameLoop,
+    GameRunConfig,
+    VLLMClient,
+)
 from server.agent.llm import VLLMError  # noqa: E402
 from server.agent.session import CDPUnavailable  # noqa: E402
 
@@ -80,9 +87,15 @@ VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
 VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4-12b")
 VLLM_MAX_TOKENS = int(os.getenv("VLLM_MAX_TOKENS", "512"))
 
-GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", "http://127.0.0.1:8001/v1")
-GROUNDING_MODEL = os.getenv("GROUNDING_MODEL", "groundnext-7b")
-GROUNDING_MAX_TOKENS = int(os.getenv("GROUNDING_MAX_TOKENS", "128"))
+GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", "http://127.0.0.1:8000/v1")
+GROUNDING_MODEL = os.getenv("GROUNDING_MODEL", "gemma4-12b")
+GROUNDING_MAX_TOKENS = int(os.getenv("GROUNDING_MAX_TOKENS", "256"))
+# Points at the same endpoint as the reasoning model by default, because the
+# deployment that actually runs today is gemma-only: the served gemma4-12b is a
+# vision model and grounds coordinates well enough to play a board game (2-11px
+# measured error, see agent/vision.py). Setting GROUNDING_BASE_URL to :8001 and
+# GROUNDING_MODEL to a dedicated grounding model switches game mode onto it the
+# moment one is loaded - no code change.
 GROUNDING_ENABLED = os.getenv("GROUNDING_ENABLED", "1") != "0"
 
 # Chrome DevTools Protocol endpoint of the browser the user is already using.
@@ -90,6 +103,10 @@ CDP_URL = os.getenv("CDP_URL", "http://localhost:9222")
 
 MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "15"))
 MAX_ACTIONS_PER_STEP = int(os.getenv("AGENT_MAX_ACTIONS_PER_STEP", "3"))
+# Game mode runs a longer horizon: one cell at a time on a Sudoku grid is dozens
+# of steps, and a chess opening is dozens of moves.
+GAME_MAX_STEPS = int(os.getenv("GAME_MAX_STEPS", "60"))
+GAME_STALL_THRESHOLD = int(os.getenv("GAME_STALL_THRESHOLD", "4"))
 SHOW_OVERLAY = os.getenv("AGENT_SHOW_OVERLAY", "1") != "0"
 SHOW_CURSOR = os.getenv("AGENT_SHOW_CURSOR", "1") != "0"
 
@@ -117,14 +134,106 @@ llm = VLLMClient(
     temperature=0.0,
 )
 
-# Same client class, different endpoint. Grounding wants near-greedy sampling and
-# a short output budget: its replies are a single tool call, never prose.
+# Precision/grounding client. Same class, possibly the same endpoint: when no
+# dedicated grounding model is loaded this points at the reasoning model, which
+# is why it is mutable - the precision role can be retargeted without a restart.
+# A grounding reply is one small JSON object, never prose, so the budget is small.
 grounding_llm = VLLMClient(
     base_url=GROUNDING_BASE_URL,
     model=GROUNDING_MODEL,
     max_tokens=GROUNDING_MAX_TOKENS,
     temperature=0.0,
 )
+
+
+def configure_precision_endpoint(base_url: str, model: str) -> None:
+    """Point the precision role at an endpoint, reusing the HTTP client.
+
+    The client is long-lived on purpose (connection reuse dominates at ~1s per
+    grounded step), so retargeting mutates it rather than building a new one.
+    """
+    global GROUNDING_BASE_URL, GROUNDING_MODEL
+    GROUNDING_BASE_URL = base_url.rstrip("/")
+    GROUNDING_MODEL = model
+    grounding_llm.base_url = GROUNDING_BASE_URL
+    grounding_llm.model = model
+
+
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+#
+# Two roles, and they do not have to be two processes:
+#
+#   reasoning  /chat and DOM browsing. Predicts an action index from a
+#              textual element map. Any instruction-following LLM serves this.
+#   precision  Game mode. Receives a screenshot and grounds a point in 0-1000
+#              normalised coordinates. Needs a vision-capable model.
+#
+# A model advertised here is one the operator has declared as loaded; the panel
+# only offers these, so it cannot ask for a model that does not exist.
+
+PRECISION_TASKS: tuple[str, ...] = ("chess", "sudoku")
+NORMAL_TASKS: tuple[str, ...] = ("browsing", "search", "wikipedia", "whatsapp")
+
+
+def _build_catalog() -> list[dict[str, Any]]:
+    """The models this deployment can be asked for, with their capabilities.
+
+    Declared in server/.env as MODELS=<id>,<id>,... and optionally annotated for
+    capabilities with MODEL_VISION=<id>,<id>. Read once at import, like the rest
+    of the configuration, so the catalog cannot silently change under a running
+    server. Anything the endpoint is serving that we did not declare is appended
+    at runtime by model_catalog(), so the panel still shows the truth when
+    someone else's launcher is occupying the port.
+    """
+    declared = [m.strip() for m in os.getenv("MODELS", "").split(",") if m.strip()]
+    vision_ids = {m.strip() for m in os.getenv("MODEL_VISION", "").split(",") if m.strip()}
+
+    if not declared:
+        declared = [VLLM_MODEL]
+        # The deployed gemma4-12b is explicitly vision-capable: it is served from
+        # an AWQ checkpoint of the gemma4_unified multimodal architecture.
+        vision_ids.add(VLLM_MODEL)
+
+    entries: list[dict[str, Any]] = []
+    for model_id in declared:
+        vision = _is_vision_model(model_id, vision_ids)
+        entries.append(
+            {
+                "id": model_id,
+                "vision": vision,
+                "modes": ["normal", "game"] if vision else ["normal"],
+                "tasks": list(NORMAL_TASKS) + (list(PRECISION_TASKS) if vision else []),
+                "reasoning": True,
+                "precision": vision,
+            }
+        )
+    return entries
+
+
+def _is_vision_model(model_id: str, declared: set[str] | None = None) -> bool:
+    """Whether a model id is known to accept image input.
+
+    Declared explicitly with MODEL_VISION; the gemma4 family is multimodal by
+    construction, so it is recognised without configuration.
+    """
+    if declared is None:
+        declared = {m.strip() for m in os.getenv("MODEL_VISION", "").split(",") if m.strip()}
+    if model_id in declared:
+        return True
+    lowered = model_id.lower()
+    return "gemma4" in lowered or "gemma-4" in lowered or "-vl" in lowered or "vision" in lowered
+
+
+# The declared catalog, frozen at import. model_catalog() layers the runtime view
+# (what is actually being served) on top of it.
+DECLARED_MODELS: list[dict[str, Any]] = _build_catalog()
+
+
+def _known_models() -> list[dict[str, Any]]:
+    """A copy of the declared catalog; callers may append the runtime view."""
+    return [dict(entry) for entry in DECLARED_MODELS]
 
 session = BrowserSessionManager(
     cdp_url=CDP_URL,
@@ -171,10 +280,129 @@ def vllm_reachable() -> bool:
 
 
 def grounding_reachable() -> bool:
-    """Whether the precision-grounding endpoint is serving right now."""
-    if not GROUNDING_ENABLED:
-        return False
+    """Coarse, synchronous guess at whether the precision port is open.
+
+    Not a readiness answer, and no longer used to decide anything: an open TCP
+    port does not mean a model is serving. Kept because callers outside this
+    module may still ask.
+    """
     return _port_open(GROUNDING_BASE_URL, 8001)
+
+
+async def _answers(client: VLLMClient) -> bool:
+    """True only when the endpoint returns a real model list.
+
+    An open TCP port is NOT proof that a model is serving. The GPU box is reached
+    through an SSH tunnel, so a forwarded port accepts connections even when
+    nothing is listening on the far end. That produced a "reachable" model with
+    an empty model list - exactly the state that fails a demo with a confusing
+    error at the first grounded click. Ask for the model list and require an
+    answer.
+    """
+    try:
+        models = await client.list_models()
+    except Exception:
+        return False
+    return bool(models)
+
+
+async def precision_endpoint() -> dict[str, Any]:
+    """Resolve which endpoint actually answers grounding calls right now.
+
+    Preference order:
+
+      1. A dedicated grounding model on GROUNDING_BASE_URL, when one is loaded.
+      2. The reasoning endpoint, when its model can accept an image. This is the
+         deployed gemma-only case: gemma4-12b is multimodal, so one process
+         serves both roles.
+      3. Nothing. Game mode is then refused with a reason the panel can show.
+
+    The fallback is explicit and reported in the "source" field, never silent.
+    A silent fallback is how "why is a different model answering?" becomes
+    unanswerable.
+    """
+    if not GROUNDING_ENABLED:
+        return {
+            "ready": False,
+            "source": "disabled",
+            "base_url": GROUNDING_BASE_URL,
+            "model": grounding_llm.model,
+            "reason": "The precision role is switched off (GROUNDING_ENABLED=0).",
+        }
+
+    dedicated = GROUNDING_BASE_URL != VLLM_BASE_URL
+    if dedicated and await _answers(grounding_llm):
+        return {
+            "ready": True,
+            "source": "dedicated",
+            "base_url": GROUNDING_BASE_URL,
+            "model": grounding_llm.model,
+            "reason": "",
+        }
+
+    if await _answers(llm):
+        vision_model = llm.model
+        if _is_vision_model(vision_model):
+            # Point the precision client at the reasoning endpoint, so a grounded
+            # call reaches the model that can actually see the screenshot.
+            if grounding_llm.base_url != VLLM_BASE_URL or grounding_llm.model != vision_model:
+                configure_precision_endpoint(VLLM_BASE_URL, vision_model)
+            return {
+                "ready": True,
+                "source": "reasoning_vision",
+                "base_url": VLLM_BASE_URL,
+                "model": vision_model,
+                "reason": "",
+            }
+        return {
+            "ready": False,
+            "source": "no_vision",
+            "base_url": GROUNDING_BASE_URL,
+            "model": grounding_llm.model,
+            "reason": (
+                "The selected model '" + vision_model + "' cannot accept images, so it "
+                "cannot ground a click. Switch to a vision model, or load a dedicated "
+                "grounding model on " + GROUNDING_BASE_URL + "."
+            ),
+        }
+
+    return {
+        "ready": False,
+        "source": "unreachable",
+        "base_url": GROUNDING_BASE_URL,
+        "model": grounding_llm.model,
+        "reason": (
+            "No model endpoint is answering. Start a model, then press Refresh."
+            if dedicated
+            else "No model is loaded on " + VLLM_BASE_URL + ". Start one, then press Refresh."
+        ),
+    }
+
+
+async def precision_reachable() -> bool:
+    """True when game mode can actually run right now."""
+    resolved = await precision_endpoint()
+    return bool(resolved["ready"])
+
+
+async def precision_model_name() -> str | None:
+    """The model that would answer a grounding call, or None if none would."""
+    resolved = await precision_endpoint()
+    return str(resolved["model"]) if resolved["ready"] else None
+
+
+async def capabilities() -> dict[str, Any]:
+    """What the panel should offer right now, and why."""
+    resolved = await precision_endpoint()
+    ready = bool(resolved["ready"])
+    return {
+        "normal": list(NORMAL_TASKS),
+        "game": list(PRECISION_TASKS) if ready else [],
+        "precision_ready": ready,
+        "precision_source": resolved["source"],
+        "precision_model": resolved["model"] if ready else None,
+        "precision_reason": "" if ready else str(resolved["reason"]),
+    }
 
 
 def cdp_reachable() -> bool:
@@ -255,34 +483,93 @@ def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # HTTP endpoints
 # ---------------------------------------------------------------------------
 
+async def model_catalog() -> dict[str, Any]:
+    """Everything the panel needs to describe the current model situation.
+
+    One source of truth for "which model is loaded, what can it do, and what went
+    wrong if not". The panel polls this while a model loads, so reachability is
+    reported per role rather than as a single boolean.
+    """
+    catalog_caps = await capabilities()
+    reasoning_models = await llm.list_models() if vllm_reachable() else []
+    precision_models = (
+        await grounding_llm.list_models()
+        if GROUNDING_BASE_URL != VLLM_BASE_URL
+        else reasoning_models
+    )
+
+    # A wrong alias is reported explicitly. vLLM's model resolver falls back to
+    # the first served model, which silently hides a typo - the classic "why is
+    # the model answering nonsense" symptom.
+    reasoning_alias_ok = (not reasoning_models) or (llm.model in reasoning_models)
+    precision_alias_ok = (not precision_models) or (grounding_llm.model in precision_models)
+
+    declared = _known_models()
+    declared_ids = {entry["id"] for entry in declared}
+    # Anything the endpoints are serving that was not declared is still shown, so
+    # a foreign launcher occupying the port cannot hide behind a tidy list.
+    for served in reasoning_models + precision_models:
+        if served in declared_ids:
+            continue
+        vision = _is_vision_model(served)
+        declared.append(
+            {
+                "id": served,
+                "vision": vision,
+                "modes": ["normal", "game"] if vision else ["normal"],
+                "tasks": list(NORMAL_TASKS) + (list(PRECISION_TASKS) if vision else []),
+                "reasoning": True,
+                "precision": vision,
+                "undeclared": True,
+            }
+        )
+        declared_ids.add(served)
+
+    return {
+        "server_up": True,
+        "catalog": declared,
+        "roles": {
+            "reasoning": {
+                "base_url": VLLM_BASE_URL,
+                "model": llm.model,
+                "reachable": vllm_reachable(),
+                "available_models": reasoning_models,
+                "alias_ok": reasoning_alias_ok,
+            },
+            "precision": {
+                "base_url": GROUNDING_BASE_URL,
+                "model": grounding_llm.model,
+                "reachable": catalog_caps["precision_ready"],
+                "enabled": GROUNDING_ENABLED,
+                "available_models": precision_models,
+                "alias_ok": precision_alias_ok,
+                "source": catalog_caps["precision_source"],
+                "load_state": (
+                    "ready"
+                    if catalog_caps["precision_ready"]
+                    else ("disabled" if not GROUNDING_ENABLED else "loading")
+                ),
+            },
+        },
+        "capabilities": catalog_caps,
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    models = await llm.list_models() if vllm_reachable() else []
-    grounding_models = await grounding_llm.list_models() if grounding_reachable() else []
-
-    # Report a wrong alias explicitly. vLLM's resolver falls back to the first
-    # served model, which silently hides a typo'd model name — the classic
-    # "why is the model answering nonsense" symptom. Say it out loud instead.
-    grounding_state: dict[str, Any] = {
-        "base_url": GROUNDING_BASE_URL,
-        "model": grounding_llm.model,
-        "enabled": GROUNDING_ENABLED,
-        "reachable": grounding_reachable(),
-        "available_models": grounding_models,
-    }
-    if grounding_models:
-        grounding_state["alias_ok"] = grounding_llm.model in grounding_models
+    catalog = await model_catalog()
+    caps = catalog["capabilities"]
 
     return {
         "status": "ok",
         "engine": "varma-native-cdp",
-        "vllm": {
-            "base_url": VLLM_BASE_URL,
-            "model": llm.model,
-            "reachable": vllm_reachable(),
-            "available_models": models,
-        },
-        "grounding": grounding_state,
+        # Kept in the old shape: an older panel build reads these two keys
+        # directly and must not break just because the model story got richer.
+        "vllm": catalog["roles"]["reasoning"],
+        "grounding": catalog["roles"]["precision"],
+        "models": catalog["catalog"],
+        "roles": catalog["roles"],
+        "capabilities": caps,
         "cdp": {
             "url": CDP_URL,
             "reachable": cdp_reachable(),
@@ -291,17 +578,104 @@ async def health() -> dict[str, Any]:
         "config": {
             "max_steps": MAX_STEPS,
             "max_actions_per_step": MAX_ACTIONS_PER_STEP,
+            "game_max_steps": GAME_MAX_STEPS,
             "overlay": SHOW_OVERLAY,
             "cursor": SHOW_CURSOR,
             "auto_redact": AUTO_REDACT,
             "approval_mode": DEFAULT_APPROVAL_MODE,
             "approval_timeout_s": APPROVAL_TIMEOUT,
+            "available_tasks": caps["normal"] + caps["game"],
+            "normal_tasks": caps["normal"],
+            "game_tasks": caps["game"],
+            "reasoning_ready": catalog["roles"]["reasoning"]["reachable"],
+            "precision_ready": caps["precision_ready"],
+            "precision_source": caps["precision_source"],
         },
         "last_step": {
             "observe_ms": round(session.last_observe_ms, 1),
             "action_ms": round(session.last_action_ms, 1),
             "llm_ms": round(llm.last_latency_ms, 1),
         },
+    }
+
+
+@app.get("/models")
+async def get_models() -> dict[str, Any]:
+    """The catalog the panel renders its switcher from."""
+    return await model_catalog()
+
+
+@app.post("/models/select")
+async def select_model(request: Request) -> Any:
+    """Switch the model the reasoning role uses.
+
+    Deliberately does not load anything. A model has to be served on an
+    OpenAI-compatible endpoint before it can be selected; loading it is a GPU
+    operation owned by scripts/start_models.sh on the box that has the GPU. What
+    this does is make "which model is answering" an explicit, inspectable choice
+    instead of an accident of whatever the tunnel happens to point at.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON body"}, status_code=400)
+
+    requested = str(data.get("model") or "").strip()
+    if not requested:
+        return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
+
+    if not vllm_reachable():
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "No model endpoint is reachable at " + VLLM_BASE_URL
+                    + ". Start the model, then retry."
+                ),
+                "load_state": "loading",
+            },
+            status_code=503,
+        )
+
+    served = await llm.list_models()
+    if served and requested not in served:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "Model '" + requested + "' is not loaded on " + VLLM_BASE_URL
+                    + ". Serving: " + ", ".join(served)
+                ),
+                "load_state": "not_loaded",
+                "available_models": served,
+            },
+            status_code=404,
+        )
+
+    previous = llm.model
+    llm.model = requested
+
+    catalog = await model_catalog()
+    entry = next((m for m in catalog["catalog"] if m["id"] == requested), None)
+
+    # A vision-capable reasoning model also serves the precision role while no
+    # dedicated grounding endpoint is configured. That is what makes game mode
+    # work on a gemma-only deployment.
+    precision_note = ""
+    if grounding_llm.base_url == VLLM_BASE_URL:
+        grounding_llm.model = requested
+        precision_note = "Precision role follows the reasoning model."
+
+    return {
+        "ok": True,
+        "selected": requested,
+        "previous": previous,
+        "vision": bool(entry and entry.get("vision")),
+        "modes": (entry or {}).get("modes", ["normal"]),
+        "tasks": (entry or {}).get("tasks", list(NORMAL_TASKS)),
+        "note": precision_note,
+        "roles": catalog["roles"],
+        "capabilities": catalog["capabilities"],
     }
 
 
@@ -417,7 +791,8 @@ async def agent_ws(websocket: WebSocket) -> None:
         await websocket.close()
         return
 
-    loop: AgentLoop | None = None
+    # Either loop streams the same events; the listener only needs .stop/.approve.
+    loop: AgentLoop | GameLoop | None = None
 
     try:
         init = await websocket.receive_json()
@@ -430,7 +805,33 @@ async def agent_ws(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "ERROR", "error": "Empty task"})
             return
 
-        max_steps = int(init.get("max_steps") or MAX_STEPS)
+        requested_mode = str(init.get("mode") or "normal").lower()
+        if requested_mode not in ("normal", "game"):
+            requested_mode = "normal"
+
+        # Game mode needs a model that can ground a point on a screenshot. Refuse
+        # clearly rather than silently degrading into the DOM loop, which would
+        # look like the agent ignoring the game and clicking page furniture.
+        game_caps = await capabilities()
+        if requested_mode == "game" and not game_caps["precision_ready"]:
+            await websocket.send_json(
+                {
+                    "type": "ERROR",
+                    "error": (
+                        game_caps["precision_reason"]
+                        or "No precision model is available for game mode."
+                    ),
+                    "mode": "game",
+                    "needs": "precision_model",
+                }
+            )
+            await websocket.close()
+            return
+
+        if requested_mode == "game":
+            max_steps = int(init.get("max_steps") or GAME_MAX_STEPS)
+        else:
+            max_steps = int(init.get("max_steps") or MAX_STEPS)
 
         # Approval mode decides whether state-changing actions pause for the
         # panel. Unknown values fall back to "manual" (the safe default).
@@ -453,15 +854,49 @@ async def agent_ws(websocket: WebSocket) -> None:
         async def emit(event: dict[str, Any]) -> None:
             await websocket.send_json(event)
 
-        await llm.resolve_model(VLLM_MODEL)
-        loop = AgentLoop(session, llm, on_event=emit)
-        config = AgentRunConfig(
-            task=task,
-            max_steps=max_steps,
-            max_actions_per_step=MAX_ACTIONS_PER_STEP,
-            approval_mode=approval_mode,
-            approval_timeout=APPROVAL_TIMEOUT,
-            auto_approve_delay=AUTO_APPROVE_DELAY,
+        loaded_reasoning_model = await llm.resolve_model(VLLM_MODEL)
+        # Re-resolve after the model is chosen: which endpoint serves grounding
+        # depends on what the reasoning role ended up on.
+        caps = await capabilities()
+        grounding_model = await precision_model_name()
+
+        if requested_mode == "game":
+            # Grounding runs on the precision client, which may be a different
+            # endpoint or the same vision model wearing a second hat.
+            loop = GameLoop(session, grounding_llm, on_event=emit)
+            config: Any = GameRunConfig(
+                task=task,
+                max_steps=max_steps,
+                stall_threshold=GAME_STALL_THRESHOLD,
+                approval_mode=approval_mode,
+                approval_timeout=APPROVAL_TIMEOUT,
+                auto_approve_delay=AUTO_APPROVE_DELAY,
+            )
+        else:
+            loop = AgentLoop(session, llm, on_event=emit)
+            config = AgentRunConfig(
+                task=task,
+                max_steps=max_steps,
+                max_actions_per_step=MAX_ACTIONS_PER_STEP,
+                approval_mode=approval_mode,
+                approval_timeout=APPROVAL_TIMEOUT,
+                auto_approve_delay=AUTO_APPROVE_DELAY,
+            )
+
+        await websocket.send_json(
+            {
+                "type": "CONNECTED",
+                "cdp_url": CDP_URL,
+                # The session may not have attached to a tab yet; asking for .page
+                # raises, and a connect-time crash is a terrible way to report
+                # "no page". Report an empty url and let the loop attach.
+                "url": session.current_url(),
+                "mode": requested_mode,
+                "reasoning_model": loaded_reasoning_model,
+                "grounding_model": grounding_model,
+                "tasks": caps["normal"] + caps["game"],
+                "capabilities": caps["normal"] + caps["game"],
+            }
         )
 
         async def listen() -> None:
