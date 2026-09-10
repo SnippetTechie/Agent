@@ -1,3 +1,6 @@
+<img width="1024" height="434" alt="image" src="https://github.com/user-attachments/assets/f67eebe9-512d-41a8-8bc0-574d8dd6f788" />
+
+
 # V.A.R.M.A — On-Device Perception for a Light-Weight Browser Agent
 
 A Chrome **side-panel** extension that perceives the page you are already on and
