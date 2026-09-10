@@ -16,7 +16,8 @@
     "test:ws": "python scripts/tests/test_ws.py",
     "test:approval": "python scripts/tests/test_approval.py",
     "test:redaction": "python scripts/tests/test_redaction.py",
-    "test": "python scripts/tests/test_approval.py && python scripts/tests/test_redaction.py"
+    "test:verification": "python scripts/tests/test_verification.py",
+    "test": "python scripts/tests/test_verification.py && python scripts/tests/test_redaction.py"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

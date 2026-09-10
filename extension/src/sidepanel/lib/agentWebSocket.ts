@@ -128,14 +128,80 @@ export interface BrowserUseActionPayload {
   [key: string]: unknown;
 }
 
+/**
+ * A viewport screenshot the agent took for this step.
+ *
+ * Sent for the panel's preview only. The image has already been used for the
+ * model call by the time this arrives; it is echoed back so the user can see
+ * exactly what the agent looked at, which is otherwise invisible.
+ */
+export interface WsScreenshot {
+  type: "SCREENSHOT";
+  step: number;
+  /** `data:image/png;base64,...` */
+  image: string;
+  width: number;
+  height: number;
+  bytes: number;
+  capture_ms?: number;
+}
+
+/**
+ * The agent's opening read of the screen: what is visible, whether anything
+ * blocks the task, and the plan it intends to follow.
+ */
+export interface WsDescription {
+  type: "DESCRIPTION";
+  step: number;
+  ok?: boolean;
+  error?: string;
+  screen?: string;
+  ready?: boolean;
+  blockers?: string;
+  plan?: string[];
+  /** The same frame as the screenshot event, for the inline preview. */
+  screenshot?: string;
+}
+
+/** The run stopped because the page stopped changing. */
+export interface WsStalled {
+  type: "STALLED";
+  step: number;
+  streak: number;
+  threshold: number;
+  reason: string;
+}
+
+/** A completion claim was refused because it carried no supporting evidence. */
+export interface WsDoneRejected {
+  type: "DONE_REJECTED";
+  step: number;
+  reason: string;
+  attempts: number;
+  max_attempts: number;
+}
+
+/** A completion claim was accepted, with the evidence that justified it. */
+export interface WsDoneVerified {
+  type: "DONE_VERIFIED";
+  step: number;
+  reason: string;
+  evidence?: string;
+}
+
 export type WsServerMessage =
   | WsConnected
   | WsStepStart
   | WsPageState
+  | WsScreenshot
+  | WsDescription
   | WsAction
   | WsStepComplete
   | WsApprovalRequired
   | WsRedactions
+  | WsStalled
+  | WsDoneRejected
+  | WsDoneVerified
   | WsFinalResult
   | WsError
   | WsStopped;
@@ -189,12 +255,22 @@ export interface AgentEventHandlers {
   onStepStart?: (msg: WsStepStart) => void;
   /** The agent's view of the page for this step (element list + timings). */
   onPageState?: (msg: WsPageState) => void;
+  /** The viewport the agent captured for this step, for the preview. */
+  onScreenshot?: (msg: WsScreenshot) => void;
+  /** The agent's opening description of the screen plus its plan. */
+  onDescription?: (msg: WsDescription) => void;
   /** A single action was executed (fired once per action, before STEP_COMPLETE). */
   onAction?: (msg: WsAction) => void;
   onStepComplete?: (msg: WsStepComplete) => void;
   onApprovalRequired?: (msg: WsApprovalRequired) => void;
   /** On-device redaction report for the step's page read. */
   onRedactions?: (msg: WsRedactions) => void;
+  /** The run ended because the page stopped changing. */
+  onStalled?: (msg: WsStalled) => void;
+  /** A completion claim was refused for lack of evidence. */
+  onDoneRejected?: (msg: WsDoneRejected) => void;
+  /** A completion claim was accepted. */
+  onDoneVerified?: (msg: WsDoneVerified) => void;
   onFinalResult?: (msg: WsFinalResult) => void;
   onError?: (msg: WsError) => void;
   onStopped?: (msg: WsStopped) => void;
@@ -371,6 +447,12 @@ export class AgentConnection {
       case "PAGE_STATE":
         this.handlers.onPageState?.(msg);
         break;
+      case "SCREENSHOT":
+        this.handlers.onScreenshot?.(msg);
+        break;
+      case "DESCRIPTION":
+        this.handlers.onDescription?.(msg);
+        break;
       case "ACTION":
         this.handlers.onAction?.(msg);
         break;
@@ -382,6 +464,15 @@ export class AgentConnection {
         break;
       case "REDACTIONS":
         this.handlers.onRedactions?.(msg);
+        break;
+      case "STALLED":
+        this.handlers.onStalled?.(msg);
+        break;
+      case "DONE_REJECTED":
+        this.handlers.onDoneRejected?.(msg);
+        break;
+      case "DONE_VERIFIED":
+        this.handlers.onDoneVerified?.(msg);
         break;
       case "FINAL_RESULT":
         this.handlers.onFinalResult?.(msg);

@@ -541,21 +541,40 @@ class BrowserSessionManager:
     # movement is visible, and at 1-2s per grounded step it is the only feedback
     # the demo has.
 
-    async def screenshot(self, *, scale: float = 1.0) -> dict[str, Any]:
-        """Capture the viewport as a PNG plus its true pixel dimensions.
+    async def screenshot(
+        self,
+        *,
+        scale: float = 1.0,
+        format: str = "jpeg",
+        quality: int = 72,
+    ) -> dict[str, Any]:
+        """Capture the viewport as an image plus its true pixel dimensions.
 
         Captured at CSS scale deliberately. Grounding error was measured to grow
         with image size (2.1px mean at 600x400, 10.9px at 1000x700), so a 2x
         device-pixel-ratio capture would double the error for no gain - the click
         is mapped back through the same scale either way.
+
+        JPEG by default, and that is a latency decision rather than a quality one
+        that was guessed. A photographic or anti-aliased page compresses into a
+        PNG of several hundred kilobytes, and the measured cost of *transporting*
+        that image is real: the same viewport measured +70 ms as a 13 KiB PNG but
+        +600 ms as a 411 KiB one, while the token cost barely moved (266 vs 268).
+        Tokens are stable across the two formats; bytes are not, so the format is
+        where the avoidable latency lives. JPEG at quality 72 is visually
+        indistinguishable at this size for reading and pointing.
         """
         page = await self.connect()
         started = time.perf_counter()
+
+        options: dict[str, Any] = {"type": format}
+        if format == "jpeg" and quality is not None:
+            options["quality"] = max(1, min(100, int(quality)))
         try:
-            data = await page.screenshot(type="png", scale="css" if scale == 1.0 else "device")
+            data = await page.screenshot(scale="css" if scale == 1.0 else "device", **options)
         except TypeError:
-            # Playwright older than 1.31 has no scale kwarg on screenshot().
-            data = await page.screenshot(type="png")
+            # Older Playwright: no `scale` kwarg on screenshot().
+            data = await page.screenshot(**options)
 
         size = vision.image_size(data)
         if size is None:

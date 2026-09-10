@@ -3,6 +3,8 @@ import { Bot, LoaderCircle } from "lucide-react";
 import type { AgentTurn } from "../types.js";
 import { ActionCard } from "./ActionCard.js";
 import { ConfirmationBanner } from "./ConfirmationBanner.js";
+import { ScreenDescriptionCard } from "./ScreenDescriptionCard.js";
+import { ScreenshotPreviewCard } from "./ScreenshotPreviewCard.js";
 import { VlmAnalysisCard } from "./VlmAnalysisCard.js";
 
 const SUMMARY_TONE: Record<AgentTurn["status"], string> = {
@@ -70,6 +72,17 @@ function MessageItemInner({
       </div>
 
       <div className="flex max-w-[92%] flex-col gap-2">
+        {/* Ordered to match the agent's own sequence: what it saw, what it is
+            doing, what it needs, and finally the answer. */}
+        {turn.description && (
+          <ScreenDescriptionCard
+            description={turn.description}
+            screenshot={turn.screenshot?.image}
+          />
+        )}
+        {turn.screenshot && !turn.description && (
+          <ScreenshotPreviewCard preview={turn.screenshot} />
+        )}
         <ActionCard turn={turn} />
         {hasAnalysis && <VlmAnalysisCard analysis={turn.analysis} />}
         {turn.approval && (

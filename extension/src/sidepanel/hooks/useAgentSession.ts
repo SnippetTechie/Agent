@@ -27,10 +27,15 @@ import {
   AgentConnection,
   type WsStepStart,
   type WsPageState,
+  type WsScreenshot,
+  type WsDescription,
   type WsAction,
   type WsStepComplete,
   type WsApprovalRequired,
   type WsRedactions,
+  type WsStalled,
+  type WsDoneRejected,
+  type WsDoneVerified,
   type WsFinalResult,
   type WsError,
   type WsStopped,
@@ -235,7 +240,8 @@ export function useAgentSession(
   const runBrowserUseTurn = useCallback(
     async (turn: AgentTurn, domain: string) => {
       const steps = turn.steps;
-      const [connectStep, perceiveStep, reasonStep] = steps;
+      // Order matches buildInitialSteps: connect, perceive, describe, reason.
+      const [connectStep, perceiveStep, describeStep, reasonStep] = steps;
 
       if (connectStep) updateStep(turn.id, connectStep.id, { status: "active" });
 
@@ -248,8 +254,17 @@ export function useAgentSession(
         },
 
         onStepStart: (msg: WsStepStart) => {
-          if (reasonStep) {
-            updateStep(turn.id, reasonStep.id, {
+          // The server labels its own phases; use the label to move the matching
+          // scaffold row to "active" so the list tracks the run, then fall back
+          // to the reasoning row for any status the panel does not recognise.
+          const status = (msg.status || "").toLowerCase();
+          const target = status.includes("screen")
+            ? describeStep
+            : status.includes("read")
+              ? perceiveStep
+              : reasonStep;
+          if (target) {
+            updateStep(turn.id, target.id, {
               status: "active",
               detail: msg.status || "Reasoning...",
             });
@@ -283,6 +298,45 @@ export function useAgentSession(
               )
             )
           );
+        },
+
+        // The agent's opening read of the screen. Rendered before any action so
+        // the user can see it understood the page before it starts clicking.
+        onDescription: (msg: WsDescription) => {
+          if (describeStep) {
+            updateStep(turn.id, describeStep.id, {
+              status: msg.ok === false ? "error" : "done",
+              detail: msg.ok === false
+                ? msg.error || "Could not read the screen."
+                : `Described the screen · ${msg.plan?.length ?? 0} step plan`,
+            });
+          }
+          updateTurn(turn.id, (prev) => ({
+            ...prev,
+            description: {
+              screen: msg.screen || "",
+              ready: msg.ready !== false,
+              blockers: msg.blockers || undefined,
+              plan: msg.plan ?? [],
+              error: msg.ok === false ? msg.error || "Could not read the screen." : undefined,
+            },
+          }));
+          if (msg.screen) appendAudit([audit(`Read the screen: ${msg.screen.slice(0, 160)}`)]);
+        },
+
+        // Keep only the newest frame: it is the one that explains the action
+        // about to be taken, and a per-step gallery would grow without bound.
+        onScreenshot: (msg: WsScreenshot) => {
+          updateTurn(turn.id, (prev) => ({
+            ...prev,
+            screenshot: {
+              image: msg.image,
+              width: msg.width,
+              height: msg.height,
+              bytes: msg.bytes,
+              step: msg.step,
+            },
+          }));
         },
 
         // One action executed. Streamed before the step finishes so the user
@@ -386,6 +440,66 @@ export function useAgentSession(
               approvalResolvers.current.delete(turn.id);
             });
           }
+        },
+
+        // The run was closed out because the page stopped changing. Surfaced as
+        // a visible outcome rather than a silent stop, because "it gave up
+        // because nothing was happening" is the useful thing to know.
+        onStalled: (msg: WsStalled) => {
+          const detail = `No page change for ${msg.streak} steps (limit ${msg.threshold})`;
+          updateTurn(turn.id, (prev) => ({
+            ...prev,
+            steps: [
+              ...prev.steps,
+              {
+                id: nextId("step"),
+                label: "Stopped: no progress",
+                detail,
+                category: "completed" as const,
+                status: "error" as const,
+              },
+            ],
+          }));
+          appendAudit([audit(`Stalled — ${detail}`)]);
+          soundEngine.playDeny();
+        },
+
+        // A completion claim with no usable evidence was refused and handed
+        // back to the model. Shown as a step so the retry is not mysterious.
+        onDoneRejected: (msg: WsDoneRejected) => {
+          updateTurn(turn.id, (prev) => ({
+            ...prev,
+            steps: [
+              ...prev.steps,
+              {
+                id: nextId("step"),
+                label: `Verification failed (${msg.attempts}/${msg.max_attempts})`,
+                detail: msg.reason,
+                category: "reasoning" as const,
+                status: "error" as const,
+              },
+            ],
+          }));
+          appendAudit([audit(`Completion rejected: ${msg.reason}`)]);
+        },
+
+        // The claim passed verification, with the evidence that justified it.
+        onDoneVerified: (msg: WsDoneVerified) => {
+          if (!msg.evidence) return;
+          updateTurn(turn.id, (prev) => ({
+            ...prev,
+            steps: [
+              ...prev.steps,
+              {
+                id: nextId("step"),
+                label: "Completion verified",
+                detail: msg.evidence,
+                category: "completed" as const,
+                status: "done" as const,
+              },
+            ],
+          }));
+          appendAudit([audit(`Verified: ${msg.evidence.slice(0, 160)}`)]);
         },
 
         onFinalResult: (msg: WsFinalResult) => {

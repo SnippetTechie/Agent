@@ -38,6 +38,13 @@ export function buildInitialSteps(t: Translate, domain: string): AgentStep[] {
     },
     {
       id: nextId("step"),
+      label: "Reading the screen",
+      detail: "Describing what is visible and planning",
+      category: "reasoning",
+      status: "pending",
+    },
+    {
+      id: nextId("step"),
       label: "Reasoning & acting",
       detail: "Model deciding the next action",
       category: "reasoning",

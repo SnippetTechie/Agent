@@ -53,6 +53,22 @@ export interface RedactionNotice {
 }
 
 /**
+ * Reachability of the receiver, the model and the browser.
+ *
+ * Mirrors the `vllm` and `cdp` blocks of GET /health. `serverUp` is separate
+ * from the other two because a receiver that answers while its model and its
+ * browser are both down is a different problem from an unreachable receiver.
+ */
+export interface HealthStatus {
+  serverUp: boolean;
+  vllmReachable: boolean;
+  cdpReachable: boolean;
+  /** The model the receiver reports it will use, when it answered. */
+  model?: string;
+  error?: string;
+}
+
+/**
  * A model the server can be asked for, as advertised by GET /models.
  *
  * The catalog is the server's, not the panel's: the panel may only offer models
@@ -151,6 +167,44 @@ export interface AgentTurn {
   summary?: string;
   /** Final answer / page summary from the agent. */
   analysis?: string;
+  /**
+   * What the agent saw when it first looked at the screen, and what it intended
+   * to do. Populated once per run, before any action.
+   */
+  description?: AgentDescription;
+  /**
+   * The most recent viewport the agent captured, as a `data:image/png` URI.
+   *
+   * Shown as a preview so the user can see what the model was looking at. Only
+   * the latest frame is kept: a screenshot per step would grow the turn without
+   * bound, and the newest one is the one that explains the current action.
+   */
+  screenshot?: ScreenshotPreview;
+}
+
+/** The agent's opening read of the page, before it acts. */
+export interface AgentDescription {
+  /** What is on screen, in the model's words. */
+  screen: string;
+  /** Whether the page was in a usable state. */
+  ready: boolean;
+  /** Cookie banner / login wall / modal that has to be cleared first. */
+  blockers?: string;
+  /** The steps it intends to take, in order. */
+  plan: string[];
+  /** Populated instead of the rest when the description call failed. */
+  error?: string;
+}
+
+/** A captured viewport, sized for display. */
+export interface ScreenshotPreview {
+  /** `data:image/png;base64,...` */
+  image: string;
+  width: number;
+  height: number;
+  bytes: number;
+  /** Which step this frame belongs to. */
+  step: number;
 }
 
 export interface AuditLogEntry {
