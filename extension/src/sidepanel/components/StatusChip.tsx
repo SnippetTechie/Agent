@@ -33,7 +33,7 @@ export function StatusChip({ category, status }: { category: StepCategory; statu
     return (
       <Chip tone="text-varma-redact border-varma-redact/30 bg-varma-redact/10">
         <XCircle className="h-3 w-3" strokeWidth={2.5} />
-        {t(meta.key)}
+        Failed
       </Chip>
     );
   }

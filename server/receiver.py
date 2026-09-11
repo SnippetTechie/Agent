@@ -43,6 +43,7 @@ from server.agent import (  # noqa: E402
 )
 from server.agent.llm import VLLMError  # noqa: E402
 from server.agent.session import CDPUnavailable  # noqa: E402
+from server.agent.extension_session import ExtensionSession  # noqa: E402
 from server.redaction.pii_detector import detector  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -832,21 +833,9 @@ async def agent_ws(websocket: WebSocket) -> None:
         await websocket.close()
         return
 
-    if not cdp_reachable():
-        await websocket.send_json(
-            {
-                "type": "ERROR",
-                "error": (
-                    f"Cannot reach the browser on {CDP_URL}. Start Chrome/Brave with "
-                    "--remote-debugging-port=9222 --user-data-dir=<profile>"
-                ),
-            }
-        )
-        await websocket.close()
-        return
-
     # Either loop streams the same events; the listener only needs .stop/.approve.
     loop: AgentLoop | GameLoop | None = None
+    active_session: Any = session
 
     try:
         init = await websocket.receive_json()
@@ -862,6 +851,30 @@ async def agent_ws(websocket: WebSocket) -> None:
         requested_mode = str(init.get("mode") or "normal").lower()
         if requested_mode not in ("normal", "game"):
             requested_mode = "normal"
+
+        # Universal browser support: if CDP is not reachable, use ExtensionSession
+        # to control the active tab directly via the extension without --remote-debugging-port
+        supports_driver = bool(init.get("supports_driver", True))
+        if not cdp_reachable():
+            if supports_driver:
+                active_session = ExtensionSession(
+                    websocket,
+                    auto_redact=bool(init.get("auto_redact", AUTO_REDACT)),
+                    show_overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
+                    show_cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
+                )
+            else:
+                await websocket.send_json(
+                    {
+                        "type": "ERROR",
+                        "error": (
+                            f"Cannot reach the browser on {CDP_URL}. Start Chrome/Brave with "
+                            "--remote-debugging-port=9222 --user-data-dir=<profile>"
+                        ),
+                    }
+                )
+                await websocket.close()
+                return
 
         # Game mode needs a model that can ground a point on a screenshot. Refuse
         # clearly rather than silently degrading into the DOM loop, which would
@@ -895,7 +908,7 @@ async def agent_ws(websocket: WebSocket) -> None:
 
         # The side panel's settings decide the visual debug layer. Apply before
         # the run starts so the first perception already draws correctly.
-        await session.apply_visuals(
+        await active_session.apply_visuals(
             overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
             cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
             redact=bool(init.get("auto_redact", AUTO_REDACT)),
@@ -903,7 +916,7 @@ async def agent_ws(websocket: WebSocket) -> None:
 
         # Tab scope: "single" pins the run to the attached tab.
         tab_scope = str(init.get("tab_scope") or "single").lower()
-        session.tab_scope = "all" if tab_scope == "all" else "single"
+        active_session.tab_scope = "all" if tab_scope == "all" else "single"
 
         async def emit(event: dict[str, Any]) -> None:
             await websocket.send_json(event)
@@ -917,7 +930,7 @@ async def agent_ws(websocket: WebSocket) -> None:
         if requested_mode == "game":
             # Grounding runs on the precision client, which may be a different
             # endpoint or the same vision model wearing a second hat.
-            loop = GameLoop(session, grounding_llm, on_event=emit)
+            loop = GameLoop(active_session, grounding_llm, on_event=emit)
             config: Any = GameRunConfig(
                 task=task,
                 max_steps=max_steps,
@@ -927,7 +940,7 @@ async def agent_ws(websocket: WebSocket) -> None:
                 auto_approve_delay=AUTO_APPROVE_DELAY,
             )
         else:
-            loop = AgentLoop(session, llm, on_event=emit)
+            loop = AgentLoop(active_session, llm, on_event=emit)
             config = AgentRunConfig(
                 task=task,
                 max_steps=max_steps,
@@ -937,14 +950,14 @@ async def agent_ws(websocket: WebSocket) -> None:
                 auto_approve_delay=AUTO_APPROVE_DELAY,
             )
 
+        cdp_val = getattr(active_session, "cdp_url", CDP_URL)
+        page_url = active_session.current_url() if hasattr(active_session, "current_url") else ""
+
         await websocket.send_json(
             {
                 "type": "CONNECTED",
-                "cdp_url": CDP_URL,
-                # The session may not have attached to a tab yet; asking for .page
-                # raises, and a connect-time crash is a terrible way to report
-                # "no page". Report an empty url and let the loop attach.
-                "url": session.current_url(),
+                "cdp_url": cdp_val,
+                "url": page_url,
                 "mode": requested_mode,
                 "reasoning_model": loaded_reasoning_model,
                 "grounding_model": grounding_model,
@@ -965,15 +978,17 @@ async def agent_ws(websocket: WebSocket) -> None:
                         loop.approve()
                     elif kind == "DENY" and loop is not None:
                         loop.deny()
+                    elif kind == "DRIVER_RESPONSE" and hasattr(active_session, "handle_driver_response"):
+                        active_session.handle_driver_response(msg)
                     elif kind == "SET_VISUALS":
-                        applied = await session.apply_visuals(
+                        applied = await active_session.apply_visuals(
                             overlay=msg.get("overlay"),
                             cursor=msg.get("cursor"),
                             redact=msg.get("redact"),
                         )
                         # Re-draw immediately so toggling on mid-run is visible.
-                        if applied.get("overlay") and loop is not None:
-                            await session.observe()
+                        if applied and applied.get("overlay") and loop is not None:
+                            await active_session.observe()
             except (WebSocketDisconnect, asyncio.CancelledError):
                 if loop is not None:
                     loop.stop()

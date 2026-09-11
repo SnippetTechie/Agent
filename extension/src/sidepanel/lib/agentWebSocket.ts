@@ -11,6 +11,7 @@
  */
 
 import type { HealthStatus } from "../types.js";
+import { executeDriverAction, type DriverActionRequest } from "./extensionDriver.js";
 
 const WS_URL = "ws://127.0.0.1:8002/ws/agent";
 const HEALTH_URL = "http://127.0.0.1:8002/health";
@@ -224,6 +225,7 @@ export interface WsStartTask {
    * follow new tabs (a navigate with new_tab, or a link that spawns one).
    */
   tab_scope?: "single" | "all";
+  supports_driver?: boolean;
 }
 
 export interface WsApprove {
@@ -350,6 +352,7 @@ export class AgentConnection {
           type: "START_TASK",
           task,
           approval_mode: approvalMode,
+          supports_driver: true,
           ...(options.maxSteps ? { max_steps: options.maxSteps } : {}),
           ...(options.showOverlay !== undefined ? { show_overlay: options.showOverlay } : {}),
           ...(options.showCursor !== undefined ? { show_cursor: options.showCursor } : {}),
@@ -476,6 +479,12 @@ export class AgentConnection {
         break;
       case "FINAL_RESULT":
         this.handlers.onFinalResult?.(msg);
+        break;
+      case "DRIVER_REQUEST" as any:
+        void (async () => {
+          const resp = await executeDriverAction(msg as unknown as DriverActionRequest);
+          this.send(resp as unknown as WsClientMessage);
+        })();
         break;
       case "ERROR":
         this.handlers.onError?.(msg);

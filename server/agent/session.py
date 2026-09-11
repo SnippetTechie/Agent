@@ -814,11 +814,15 @@ class BrowserSessionManager:
         page = self.page
         text = await page.evaluate(
             """() => {
-                const b = document.body;
-                if (!b) return '';
-                const c = b.cloneNode(true);
-                c.querySelectorAll('script,style,noscript,svg,iframe,canvas').forEach(n => n.remove());
-                return (c.innerText || c.textContent || '').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 6000);
+                const main = document.querySelector('main, article, #mw-content-text, #content, [role="main"]') || document.body;
+                if (!main) return '';
+                const paras = Array.from(main.querySelectorAll('p'))
+                    .map(p => (p.innerText || p.textContent || '').trim())
+                    .filter(t => t.length > 40 && !t.startsWith('{') && !t.startsWith('<'));
+                if (paras.length > 0) {
+                    return paras.slice(0, 15).join('\\n\\n').slice(0, 8000);
+                }
+                return (main.innerText || main.textContent || '').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 8000);
             }"""
         )
         return {"ok": True, "action": "read", "text": text, "url": page.url}

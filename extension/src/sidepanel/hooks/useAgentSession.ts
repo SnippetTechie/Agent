@@ -91,7 +91,7 @@ export function useAgentSession(
   const [hydrated, setHydrated] = useState(false);
 
   const agentConnRef = useRef<AgentConnection | null>(null);
-  const approvalResolvers = useRef<Map<string, (approved: boolean) => void>>(new Map());
+  const approvalResolvers = useRef<Map<string, (approved: boolean) => void | Promise<void>>>(new Map());
   /** Timers that auto-resolve an "auto" approval; cleared on unmount. */
   const approvalTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
@@ -207,24 +207,43 @@ export function useAgentSession(
   );
 
   const takeRedactedScreenshotForTurn = useCallback(
-    async (turnId: string, promptText: string) => {
+    async (
+      turnId: string,
+      promptText: string,
+      stepNumber = 0,
+      label = "Pre-task analysis"
+    ) => {
       try {
         const res = await captureRedactedScreenshot(promptText);
         if (res.ok && res.dataUrl) {
-          updateTurn(turnId, (prev) => ({
-            ...prev,
-            screenshot: {
-              image: res.dataUrl,
-              width: 0,
-              height: 0,
-              bytes: res.dataUrl.length,
-              step: 0,
-            },
-          }));
+          const item = {
+            id: nextId("screenshot"),
+            image: res.dataUrl,
+            label,
+            step: stepNumber,
+            timestamp: Date.now(),
+          };
+          updateTurn(turnId, (prev) => {
+            const existing = prev.screenshots ? [...prev.screenshots] : [];
+            const filtered = existing.filter(
+              (s) => !(s.step === stepNumber && s.label === label)
+            );
+            return {
+              ...prev,
+              screenshot: {
+                image: res.dataUrl,
+                width: 0,
+                height: 0,
+                bytes: res.dataUrl.length,
+                step: stepNumber,
+              },
+              screenshots: [...filtered, item],
+            };
+          });
           if (res.appliedCount > 0) {
             appendAudit([
               audit(
-                `In-DOM pre-screenshot redaction: ${res.appliedCount} placeholder(s) applied (${res.tags.join(", ")})`,
+                `In-DOM redaction (${label}): ${res.appliedCount} placeholder(s) applied (${res.tags.join(", ")})`,
                 asRedactionTag(res.tags[0] || "CREDENTIAL")
               ),
             ]);
@@ -232,7 +251,7 @@ export function useAgentSession(
           return res;
         }
       } catch (err) {
-        console.warn("[varma] Pre-screenshot capture error:", err);
+        console.warn("[varma] Redacted screenshot capture error:", err);
       }
       return null;
     },
@@ -322,10 +341,7 @@ export function useAgentSession(
               detail: `${msg.elements.length} interactive elements · ${Math.round(msg.observe_ms)}ms`,
             });
           }
-          updateTurn(turn.id, (prev) => ({
-            ...prev,
-            analysis: `${msg.title || msg.url} — ${msg.elements.length} interactive elements`,
-          }));
+          // Keep analysis free for actual task summaries from onFinalResult
         },
 
         // Layer-1 redaction report: what was masked on-device before the model
@@ -388,7 +404,8 @@ export function useAgentSession(
         // sees progress without waiting for the whole step.
         onAction: (msg: WsAction) => {
           const action = msg.action;
-          const detail = describeAction(action);
+          const rawDetail = describeAction(action);
+          const detail = rawDetail.startsWith("Action:") ? rawDetail : `Action: ${rawDetail}`;
           if (reasonStep) updateStep(turn.id, reasonStep.id, { status: "done" });
 
           const dynamicStep = {
@@ -429,7 +446,7 @@ export function useAgentSession(
         onApprovalRequired: (msg: WsApprovalRequired) => {
           const actionDesc =
             msg.actions
-              ?.map((a: BrowserUseActionPayload) => a.type || a.name || "action")
+              ?.map((a: BrowserUseActionPayload) => a.label || a.action || a.type || a.name || "action")
               .join(", ") || "browser action";
 
           // The server only raises a gate in manual/auto mode, so the mode that
@@ -462,7 +479,15 @@ export function useAgentSession(
                   : prev
               );
               conn.approve();
-            }, 900);
+              if (visualsRef.current.autoRedact) {
+                void takeRedactedScreenshotForTurn(
+                  turn.id,
+                  turn.prompt,
+                  msg.step,
+                  `Post-Approval: ${actionDesc}`
+                );
+              }
+            }, 600);
             approvalTimers.current.add(timer);
           } else {
             // Manual: register a resolver so the banner's buttons can decide.
@@ -478,6 +503,14 @@ export function useAgentSession(
               );
               if (approved) {
                 conn.approve();
+                if (visualsRef.current.autoRedact) {
+                  void takeRedactedScreenshotForTurn(
+                    turn.id,
+                    turn.prompt,
+                    msg.step,
+                    `Post-Approval: ${actionDesc}`
+                  );
+                }
               } else {
                 conn.deny();
                 soundEngine.playDeny();
@@ -710,7 +743,9 @@ export function useAgentSession(
               ? { ...turn.approval, state: "expired" }
               : turn.approval,
           steps: turn.steps.map((s) =>
-            s.status === "active" || s.status === "pending" ? { ...s, status: "skipped" } : s
+            s.status === "active" || s.status === "pending"
+              ? { ...s, status: "error", detail: "Cancelled by user" }
+              : s
           ),
         };
       })
@@ -734,7 +769,7 @@ export function useAgentSession(
   const resolveApproval = useCallback((approved: boolean) => {
     const runningTurnId = [...approvalResolvers.current.keys()].pop();
     if (!runningTurnId) return;
-    approvalResolvers.current.get(runningTurnId)?.(approved);
+    void approvalResolvers.current.get(runningTurnId)?.(approved);
   }, []);
 
   const approveCurrentTurn = useCallback(() => resolveApproval(true), [resolveApproval]);

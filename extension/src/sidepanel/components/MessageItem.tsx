@@ -38,6 +38,12 @@ function MessageItemInner({
         </div>
 
         <div className="flex max-w-[92%] flex-col gap-2">
+          {(turn.screenshot || (turn.screenshots && turn.screenshots.length > 0)) && (
+            <ScreenshotPreviewCard
+              preview={turn.screenshot}
+              screenshots={turn.screenshots}
+            />
+          )}
           <div className="animate-varma-rise rounded-2xl rounded-tl-sm border border-varma-border/80 bg-varma-surface/90 px-4 py-3 text-[13px] leading-relaxed text-varma-text shadow-sm backdrop-blur-sm">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-varma-text-dim">
               <Bot className="h-3.5 w-3.5 text-varma-signal" />
@@ -74,8 +80,11 @@ function MessageItemInner({
       <div className="flex max-w-[92%] flex-col gap-2">
         {/* Ordered to match the agent's own sequence: what it saw, what it is
             doing, what it needs, and finally the answer. */}
-        {turn.screenshot && (
-          <ScreenshotPreviewCard preview={turn.screenshot} />
+        {(turn.screenshot || (turn.screenshots && turn.screenshots.length > 0)) && (
+          <ScreenshotPreviewCard
+            preview={turn.screenshot}
+            screenshots={turn.screenshots}
+          />
         )}
         {turn.description && (
           <ScreenDescriptionCard description={turn.description} />

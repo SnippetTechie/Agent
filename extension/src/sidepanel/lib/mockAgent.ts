@@ -20,7 +20,7 @@ export function nextId(prefix: string): string {
  * them with measured detail within a step, so branching here would only add
  * noise that the user sees for ~200 ms.
  */
-export function buildInitialSteps(t: Translate, domain: string): AgentStep[] {
+export function buildInitialSteps(_t: Translate, domain: string): AgentStep[] {
   return [
     {
       id: nextId("step"),
@@ -48,13 +48,6 @@ export function buildInitialSteps(t: Translate, domain: string): AgentStep[] {
       label: "Reasoning & acting",
       detail: "Model deciding the next action",
       category: "reasoning",
-      status: "pending",
-    },
-    {
-      id: nextId("step"),
-      label: t("steps.actionLabel"),
-      detail: t("steps.actionDetail"),
-      category: "executing",
       status: "pending",
     },
   ];

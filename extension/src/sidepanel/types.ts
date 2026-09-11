@@ -180,6 +180,16 @@ export interface AgentTurn {
    * bound, and the newest one is the one that explains the current action.
    */
   screenshot?: ScreenshotPreview;
+  /** All screenshots captured during this turn (pre-prompt, post-approvals, etc.). */
+  screenshots?: ScreenshotItem[];
+}
+
+export interface ScreenshotItem {
+  id: string;
+  image: string;
+  label?: string;
+  step?: number;
+  timestamp: number;
 }
 
 /** The agent's opening read of the page, before it acts. */

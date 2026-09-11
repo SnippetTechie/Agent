@@ -20,38 +20,43 @@ function asText(value: unknown, limit = 48): string {
 export function describeAction(action: AnyAction | undefined): string {
   if (!action) return "No action";
 
-  const kind = String(action.type ?? action.name ?? "action");
+  const kind = String(action.action ?? action.type ?? action.name ?? "action").toLowerCase();
   const index = action.index;
+  const rawLabel = String(action.label || action.name || "").trim();
+  const label = asText(rawLabel, 45);
 
   switch (kind) {
     case "click": {
-      const label = asText(action.label, 40);
-      return label ? `Click [${index}] ${label}` : `Click [${index}]`;
+      if (label) return `Clicked "${label}"`;
+      if (index !== undefined) return `Clicked element [${index}]`;
+      return "Clicked button";
     }
     case "type": {
-      const text = asText(action.text, 40);
-      const submit = action.submit ? " and submit" : "";
-      return `Type "${text}" into [${index}]${submit}`;
+      const text = asText(action.text, 35);
+      const target = label ? `"${label}"` : index !== undefined ? `[${index}]` : "input";
+      const submit = action.submit ? " and submitted" : "";
+      return `Typed "${text}" into ${target}${submit}`;
     }
     case "navigate":
-      return `Open ${asText(action.url, 60)}`;
+      return `Navigated to ${asText(action.url, 50)}`;
     case "scroll":
-      return `Scroll ${asText(action.direction ?? "down", 10)}`;
+      return `Scrolled ${asText(action.direction ?? "down", 10)}`;
     case "hover":
-      return `Hover [${index}]`;
+      return label ? `Hovered over "${label}"` : `Hovered [${index}]`;
     case "press":
-      return `Press ${asText(action.key, 16)}`;
+      return `Pressed ${asText(action.key, 16)}`;
     case "wait":
-      return `Wait ${asText(action.seconds ?? 1, 6)}s`;
+      return `Waited ${asText(action.seconds ?? 1, 6)}s`;
     case "wait_for":
-      return `Wait for "${asText(action.text, 32)}"`;
+      return `Waited for "${asText(action.text, 32)}"`;
     case "read":
-      return "Read page";
+      return "Read the page";
     case "go_back":
-      return "Go back";
+      return "Went back";
     case "done":
-      return "Task finished";
+      return label ? `Finished: ${label}` : "Task finished";
     default:
-      return kind;
+      if (label) return `${kind}: "${label}"`;
+      return kind !== "action" ? `Action: ${kind}` : "Executed action";
   }
 }

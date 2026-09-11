@@ -30,7 +30,7 @@ EXTRACT_SCRIPT = r"""
   // a few regex passes over text we already have.
   const REDACT = !(opts && opts.redact === false);
   const MAX_ELEMENTS = 150;
-  const MAX_TEXT = 2500;
+  const MAX_TEXT = 5000;
   const MAX_LABEL = 70;
 
   const INTERACTIVE = [
@@ -215,21 +215,23 @@ EXTRACT_SCRIPT = r"""
   } catch {}
 
   // Visible text, minus the interactive labels we already report.
-  const body = document.body;
   let text = '';
-  if (body && !SKIP_TEXT) {
-    const clone = body.cloneNode(true);
-    clone.querySelectorAll('script,style,noscript,svg,iframe,canvas').forEach(n => n.remove());
-    // Drop secret-field values from the clone before reading text: a password
-    // input's rendered text is not in innerText, but a filled <textarea> is.
-    clone.querySelectorAll('input,textarea').forEach(n => {
-      if (isSecretField(n)) n.value = '';
-    });
-    text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
-    if (REDACT && text) {
-      const before = text;
-      text = scrubText(text);
-      if (text !== before) noteRedaction('CREDENTIAL', 'page-text', 1);
+  if (!SKIP_TEXT) {
+    const mainEl = document.querySelector('main, article, #mw-content-text, #content, [role="main"]') || document.body;
+    if (mainEl) {
+      const paras = Array.from(mainEl.querySelectorAll('p'))
+        .map(p => (p.innerText || p.textContent || '').trim())
+        .filter(t => t.length > 40 && !t.startsWith('{') && !t.startsWith('<'));
+      if (paras.length > 0) {
+        text = paras.slice(0, 10).join('\n\n');
+      } else {
+        text = (mainEl.innerText || mainEl.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+      }
+      if (REDACT && text) {
+        const before = text;
+        text = scrubText(text);
+        if (text !== before) noteRedaction('CREDENTIAL', 'page-text', 1);
+      }
     }
   }
   text = clamp(text, MAX_TEXT);

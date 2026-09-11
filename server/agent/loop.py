@@ -13,9 +13,12 @@ what keeps a step inside the 1-3s budget on a single-GPU 12B model.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 from . import prompts
 from .dom import format_state_for_prompt
@@ -276,16 +279,31 @@ class AgentLoop:
                 actions = []
             actions = actions[: config.max_actions_per_step]
 
-            # Block actions the agent has already repeated without progress.
-            # A nudge alone is not enough: a small model will happily repeat a
-            # no-op click forever.
+            # Block actions the agent has already repeated without progress,
+            # and block redundant navigations to the URL already loaded.
+            current_url = str(state.get("url") or "").strip().rstrip("/").lower()
+            clean_curr = current_url.replace("https://", "").replace("http://", "")
+
             counts = self._repeat_counts()
             kept: list[dict[str, Any]] = []
             blocked: list[str] = []
             for action in actions:
-                if str(action.get("type", "")).lower() == "done":
+                atype = str(action.get("type", "")).lower()
+                if atype == "done":
                     kept.append(action)
                     continue
+
+                if atype == "navigate":
+                    nav_url = str(action.get("url") or "").strip().rstrip("/").lower()
+                    clean_nav = nav_url.replace("https://", "").replace("http://", "")
+                    if clean_curr and clean_nav and (clean_curr == clean_nav or clean_curr.startswith(clean_nav) or clean_nav.startswith(clean_curr)):
+                        blocked.append(f"navigate to {nav_url} (already on this page)")
+                        task_lower = config.task.lower()
+                        if any(k in task_lower for k in ["summar", "search", "read", "who is", "what is", "tell me about"]):
+                            summary_text = await self._summarize_page(state, config.task)
+                            kept.append({"type": "done", "success": True, "text": summary_text})
+                        continue
+
                 key = _proposed_key(action)
                 if counts.get(key, 0) >= config.loop_threshold:
                     blocked.append(key)
@@ -413,17 +431,31 @@ class AgentLoop:
 
             if done_payload is not None:
                 final_text = str(done_payload.get("text") or "").strip()
-                if not final_text:
-                    final_text = _summarize_page(state, config.task)
+                task_lower = config.task.lower()
+                is_summary_task = any(k in task_lower for k in ["summar", "search", "who is", "what is", "tell me about", "read"])
+                refusal_phrases = [
+                    "cannot fulfill", "no webpage content", "not provided", "please provide",
+                    "as an ai", "jump to content", "i cannot", "i am unable", "empty page",
+                    "cannot summarize", "no text", "could not find", "provide the text"
+                ]
+                is_unhelpful = any(phrase in final_text.lower() for phrase in refusal_phrases)
+                if not final_text or (is_summary_task and (len(final_text) < 50 or is_unhelpful)):
+                    final_text = await self._summarize_page(state, config.task)
                 success = bool(done_payload.get("success", True))
                 break
 
         else:
-            final_text = (
-                final_text
-                or "Reached the step limit before finishing. Here is what I did so far."
-            )
-            success = False
+            task_lower = config.task.lower()
+            is_summary_task = any(k in task_lower for k in ["summar", "search", "who is", "what is", "tell me about"])
+            if is_summary_task and (state.get("text") or state.get("title")):
+                final_text = await self._summarize_page(state, config.task)
+                success = True
+            else:
+                final_text = (
+                    final_text
+                    or "Reached the step limit before finishing. Here is what I did so far."
+                )
+                success = False
 
         if self._stop.is_set() and not final_text:
             await self._emit({"type": "STOPPED", "reason": "User stopped the task"})
@@ -621,6 +653,60 @@ class AgentLoop:
         except Exception:
             pass
 
+    async def _summarize_page(self, state: dict[str, Any], task: str) -> str:
+        """Use the LLM to generate an accurate, coherent, direct summary of the current page."""
+        title = (state.get("title") or "").strip()
+        url = (state.get("url") or "").strip()
+        text = (state.get("text") or "").strip()
+
+        # If text is empty or too short, read the live page text directly from the session
+        if len(text) < 300:
+            try:
+                read_res = await self.session.read_text()
+                if read_res.get("ok") and read_res.get("text"):
+                    text = str(read_res["text"])
+            except Exception:
+                pass
+
+        clean_text = text.strip()
+
+        # Ask the LLM for a high-quality, direct summary
+        summary_prompt = (
+            f"The user requested: \"{task}\"\n\n"
+            f"Current Webpage: {title} ({url})\n\n"
+            f"Page Content:\n\"\"\"\n{clean_text[:4500]}\n\"\"\"\n\n"
+            "Write a concise, informative, high-quality 2 to 4 sentence summary of the subject based on the page content above. "
+            "Focus directly on who/what the subject is, their significance, and key facts. "
+            "Do NOT include website navigation boilerplate, table of contents, or instructions. "
+            "Return ONLY the direct factual summary."
+        )
+
+        try:
+            res = await self.llm.chat(
+                [{"role": "user", "content": summary_prompt}],
+                max_tokens=350,
+                temperature=0.2,
+            )
+            llm_text = (res.get("text") or "").strip()
+            unhelpful_tokens = [
+                "cannot fulfill", "no webpage content", "not provided", "please provide",
+                "as an ai", "jump to content", "table of contents", "i cannot", "i am unable"
+            ]
+            if llm_text and len(llm_text) > 40 and not any(k in llm_text.lower() for k in unhelpful_tokens):
+                return llm_text
+        except Exception as exc:
+            logger.warning("LLM summarization failed: %s", exc)
+
+        # Fallback heuristic: find the first 2-3 genuine prose paragraphs
+        paragraphs = [
+            p.strip() for p in clean_text.split("\n\n")
+            if len(p.strip()) > 80 and not p.strip().startswith(("{", "<", "["))
+        ]
+        if paragraphs:
+            return "\n\n".join(paragraphs[:2])
+
+        return f"{title}: {clean_text[:350]}..."
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -687,20 +773,3 @@ def _describe_result(result: dict[str, Any]) -> str:
     return f"{name} ok"
 
 
-def _summarize_page(state: dict[str, Any], task: str) -> str:
-    """Build a useful final answer when the model calls done without text."""
-    title = (state.get("title") or "").strip()
-    url = (state.get("url") or "").strip()
-    text = (state.get("text") or "").strip()
-
-    snippet = " ".join(text.split())[:280]
-    parts = []
-    if title:
-        parts.append(f"{title}")
-    if snippet:
-        parts.append(snippet)
-    if url:
-        parts.append(f"({url[:120]})")
-    if parts:
-        return " - ".join(parts)
-    return f"Finished: {task}"
