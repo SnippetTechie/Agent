@@ -906,68 +906,8 @@ async def agent_ws(websocket: WebSocket) -> None:
         if approval_mode not in ("manual", "auto", "skip"):
             approval_mode = "manual"
 
-        # The side panel's settings decide the visual debug layer. Apply before
-        # the run starts so the first perception already draws correctly.
-        await active_session.apply_visuals(
-            overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
-            cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
-            redact=bool(init.get("auto_redact", AUTO_REDACT)),
-        )
-
-        # Tab scope: "single" pins the run to the attached tab.
-        tab_scope = str(init.get("tab_scope") or "single").lower()
-        active_session.tab_scope = "all" if tab_scope == "all" else "single"
-
-        async def emit(event: dict[str, Any]) -> None:
-            await websocket.send_json(event)
-
-        loaded_reasoning_model = await llm.resolve_model(VLLM_MODEL)
-        # Re-resolve after the model is chosen: which endpoint serves grounding
-        # depends on what the reasoning role ended up on.
-        caps = await capabilities()
-        grounding_model = await precision_model_name()
-
-        if requested_mode == "game":
-            # Grounding runs on the precision client, which may be a different
-            # endpoint or the same vision model wearing a second hat.
-            loop = GameLoop(active_session, grounding_llm, on_event=emit)
-            config: Any = GameRunConfig(
-                task=task,
-                max_steps=max_steps,
-                stall_threshold=GAME_STALL_THRESHOLD,
-                approval_mode=approval_mode,
-                approval_timeout=APPROVAL_TIMEOUT,
-                auto_approve_delay=AUTO_APPROVE_DELAY,
-            )
-        else:
-            loop = AgentLoop(active_session, llm, on_event=emit)
-            config = AgentRunConfig(
-                task=task,
-                max_steps=max_steps,
-                max_actions_per_step=MAX_ACTIONS_PER_STEP,
-                approval_mode=approval_mode,
-                approval_timeout=APPROVAL_TIMEOUT,
-                auto_approve_delay=AUTO_APPROVE_DELAY,
-            )
-
-        cdp_val = getattr(active_session, "cdp_url", CDP_URL)
-        page_url = active_session.current_url() if hasattr(active_session, "current_url") else ""
-
-        await websocket.send_json(
-            {
-                "type": "CONNECTED",
-                "cdp_url": cdp_val,
-                "url": page_url,
-                "mode": requested_mode,
-                "reasoning_model": loaded_reasoning_model,
-                "grounding_model": grounding_model,
-                "tasks": caps["normal"] + caps["game"],
-                "capabilities": caps["normal"] + caps["game"],
-            }
-        )
-
         async def listen() -> None:
-            """Handle STOP, APPROVE/DENY and live visual toggles mid-run."""
+            """Handle STOP, APPROVE/DENY, DRIVER_RESPONSE and live visual toggles mid-run."""
             try:
                 while True:
                     msg = await websocket.receive_json()
@@ -996,7 +936,68 @@ async def agent_ws(websocket: WebSocket) -> None:
                 pass
 
         listener = asyncio.create_task(listen())
+
         try:
+            # The side panel's settings decide the visual debug layer. Apply before
+            # the run starts so the first perception already draws correctly.
+            await active_session.apply_visuals(
+                overlay=bool(init.get("show_overlay", SHOW_OVERLAY)),
+                cursor=bool(init.get("show_cursor", SHOW_CURSOR)),
+                redact=bool(init.get("auto_redact", AUTO_REDACT)),
+            )
+
+            # Tab scope: "single" pins the run to the attached tab.
+            tab_scope = str(init.get("tab_scope") or "single").lower()
+            active_session.tab_scope = "all" if tab_scope == "all" else "single"
+
+            async def emit(event: dict[str, Any]) -> None:
+                await websocket.send_json(event)
+
+            loaded_reasoning_model = await llm.resolve_model(VLLM_MODEL)
+            # Re-resolve after the model is chosen: which endpoint serves grounding
+            # depends on what the reasoning role ended up on.
+            caps = await capabilities()
+            grounding_model = await precision_model_name()
+
+            if requested_mode == "game":
+                # Grounding runs on the precision client, which may be a different
+                # endpoint or the same vision model wearing a second hat.
+                loop = GameLoop(active_session, grounding_llm, on_event=emit)
+                config: Any = GameRunConfig(
+                    task=task,
+                    max_steps=max_steps,
+                    stall_threshold=GAME_STALL_THRESHOLD,
+                    approval_mode=approval_mode,
+                    approval_timeout=APPROVAL_TIMEOUT,
+                    auto_approve_delay=AUTO_APPROVE_DELAY,
+                )
+            else:
+                loop = AgentLoop(active_session, llm, on_event=emit)
+                config = AgentRunConfig(
+                    task=task,
+                    max_steps=max_steps,
+                    max_actions_per_step=MAX_ACTIONS_PER_STEP,
+                    approval_mode=approval_mode,
+                    approval_timeout=APPROVAL_TIMEOUT,
+                    auto_approve_delay=AUTO_APPROVE_DELAY,
+                )
+
+            cdp_val = getattr(active_session, "cdp_url", CDP_URL)
+            page_url = active_session.current_url() if hasattr(active_session, "current_url") else ""
+
+            await websocket.send_json(
+                {
+                    "type": "CONNECTED",
+                    "cdp_url": cdp_val,
+                    "url": page_url,
+                    "mode": requested_mode,
+                    "reasoning_model": loaded_reasoning_model,
+                    "grounding_model": grounding_model,
+                    "tasks": caps["normal"] + caps["game"],
+                    "capabilities": caps["normal"] + caps["game"],
+                }
+            )
+
             await loop.run(config)
         finally:
             listener.cancel()

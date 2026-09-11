@@ -56,36 +56,55 @@ class ExtensionSession:
 
     async def observe(self, *, draw_overlay: bool | None = None) -> dict[str, Any]:
         start = time.perf_counter()
-        state = await self._send_req("observe", redact=self.auto_redact)
+        overlay = self.show_overlay if draw_overlay is None else draw_overlay
+        state = await self._send_req(
+            "observe",
+            redact=self.auto_redact,
+            show_overlay=overlay,
+            show_cursor=self.show_cursor,
+        )
         self.last_observe_ms = (time.perf_counter() - start) * 1000.0
         return state
 
     async def wait_until_ready(self, timeout: float = 2.0) -> None:
         pass
 
-    async def ensure_cursor_visible(self, **kwargs) -> None:
-        pass
+    async def ensure_cursor_visible(self, *, x: float | None = None, y: float | None = None) -> None:
+        if not self.show_cursor:
+            return
+        await self._send_req("cursor", x=x or 150, y=y or 150, instant=True)
 
     async def ensure_task_border(self) -> None:
-        pass
+        await self._send_req("task_border")
 
     async def ensure_stop_control(self) -> None:
         pass
 
     async def refresh_visuals(self) -> None:
-        await self._send_req("refresh_visuals")
+        await self._send_req(
+            "refresh_visuals",
+            show_overlay=self.show_overlay,
+            show_cursor=self.show_cursor,
+        )
 
     async def clear_overlay(self) -> None:
         await self._send_req("clear_overlay")
 
     async def click(self, index: int, double: bool = False) -> dict[str, Any]:
-        return await self._send_req("click", index=index, double=double)
+        return await self._send_req(
+            "click", index=index, double=double, show_cursor=self.show_cursor
+        )
 
     async def type_text(
         self, index: int, text: str, submit: bool = True, clear: bool = False
     ) -> dict[str, Any]:
         return await self._send_req(
-            "type", index=index, text=text, submit=submit, clear=clear
+            "type",
+            index=index,
+            text=text,
+            submit=submit,
+            clear=clear,
+            show_cursor=self.show_cursor,
         )
 
     async def navigate(self, url: str, new_tab: bool = False) -> dict[str, Any]:
@@ -117,5 +136,27 @@ class ExtensionSession:
     async def go_back(self) -> dict[str, Any]:
         return {"ok": True, "action": "go_back"}
 
-    async def apply_visuals(self, **kwargs) -> None:
-        pass
+    async def apply_visuals(
+        self,
+        *,
+        overlay: bool | None = None,
+        cursor: bool | None = None,
+        redact: bool | None = None,
+    ) -> dict[str, Any]:
+        if overlay is not None:
+            self.show_overlay = overlay
+        if cursor is not None:
+            self.show_cursor = cursor
+        if redact is not None:
+            self.auto_redact = redact
+        await self._send_req(
+            "apply_visuals",
+            show_overlay=self.show_overlay,
+            show_cursor=self.show_cursor,
+            redact=self.auto_redact,
+        )
+        return {
+            "overlay": self.show_overlay,
+            "cursor": self.show_cursor,
+            "redact": self.auto_redact,
+        }
