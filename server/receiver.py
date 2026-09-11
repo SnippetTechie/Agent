@@ -43,6 +43,7 @@ from server.agent import (  # noqa: E402
 )
 from server.agent.llm import VLLMError  # noqa: E402
 from server.agent.session import CDPUnavailable  # noqa: E402
+from server.redaction.pii_detector import detector  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -249,7 +250,9 @@ session = BrowserSessionManager(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Own the shared HTTP and CDP connections for the process lifetime."""
+    """Own the shared HTTP, CDP connections, and PII detector for the process lifetime."""
+    # Pre-warm or background-load the LiquidAI PII detector model
+    asyncio.create_task(asyncio.to_thread(detector.load_model))
     yield
     await llm.aclose()
     await grounding_llm.aclose()
@@ -721,6 +724,46 @@ async def save_screenshot(request: Request) -> Any:
         }
     except Exception as exc:  # pragma: no cover
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/redact/detect")
+async def detect_pii(request: Request) -> Any:
+    """Detect PII entities in page text using LiquidAI LFM2.5 and deterministic rules."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+
+    text = str(data.get("text") or "").strip()
+    elements = data.get("elements") or []
+
+    # If full text wasn't provided, aggregate from elements
+    if not text and elements:
+        text = "\n".join(str(el.get("text") or el.get("label") or "") for el in elements if el)
+
+    if not text:
+        return {"ok": True, "spans": [], "targets": [], "count": 0}
+
+    # If model is not loaded yet, ensure it is loaded before running
+    if not detector.is_loaded:
+        await asyncio.to_thread(detector.load_model)
+
+    # Run detection (deterministic regex + neural LFM2.5)
+    spans = await asyncio.to_thread(detector.detect, text)
+
+    targets = [
+        {"text": span.text, "tag": span.tag, "label": span.label}
+        for span in spans
+        if len(span.text.strip()) >= 3
+    ]
+
+    return {
+        "ok": True,
+        "spans": [span.to_dict() for span in spans],
+        "targets": targets,
+        "count": len(targets),
+        "model_loaded": detector.is_loaded,
+    }
 
 
 CHAT_SYSTEM_PROMPT = (

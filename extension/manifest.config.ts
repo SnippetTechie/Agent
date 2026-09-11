@@ -32,7 +32,14 @@ export default defineManifest({
   // tabGroups lets V.A.R.M.A visually mark the tab it currently has access
   // to (lib/tabAccess.ts, called from lib/activeTab.ts on every active-tab
   // read), the same way Claude in Chrome labels the tab it's working in.
-  permissions: ["sidePanel", "activeTab", "storage", "tabGroups"],
+  permissions: [
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage",
+    "tabGroups",
+  ],
   host_permissions: [
     "<all_urls>",
     "http://127.0.0.1:8000/*",

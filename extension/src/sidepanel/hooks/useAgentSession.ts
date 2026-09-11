@@ -17,7 +17,7 @@ import {
   nextId,
 } from "../lib/mockAgent.js";
 import { getActiveTabContext, watchActiveTabContext } from "../lib/activeTab.js";
-import { sendChatMessage, type ChatMessage } from "../lib/capture.js";
+import { sendChatMessage, captureRedactedScreenshot, type ChatMessage } from "../lib/capture.js";
 import { describeAction } from "../lib/actions.js";
 import { resolveTurnMode } from "../lib/intent.js";
 import { loadState, saveState, clearState } from "../lib/storage.js";
@@ -206,10 +206,47 @@ export function useAgentSession(
     []
   );
 
+  const takeRedactedScreenshotForTurn = useCallback(
+    async (turnId: string, promptText: string) => {
+      try {
+        const res = await captureRedactedScreenshot(promptText);
+        if (res.ok && res.dataUrl) {
+          updateTurn(turnId, (prev) => ({
+            ...prev,
+            screenshot: {
+              image: res.dataUrl,
+              width: 0,
+              height: 0,
+              bytes: res.dataUrl.length,
+              step: 0,
+            },
+          }));
+          if (res.appliedCount > 0) {
+            appendAudit([
+              audit(
+                `In-DOM pre-screenshot redaction: ${res.appliedCount} placeholder(s) applied (${res.tags.join(", ")})`,
+                asRedactionTag(res.tags[0] || "CREDENTIAL")
+              ),
+            ]);
+          }
+          return res;
+        }
+      } catch (err) {
+        console.warn("[varma] Pre-screenshot capture error:", err);
+      }
+      return null;
+    },
+    [updateTurn, appendAudit, audit]
+  );
+
   // ─── Chat Mode (POST /chat) ──────────────────────────────────────────────
 
   const runChatTurn = useCallback(
     async (turn: AgentTurn, history: ChatMessage[]) => {
+      if (visualsRef.current.autoRedact) {
+        await takeRedactedScreenshotForTurn(turn.id, turn.prompt);
+      }
+
       const chatResult = await sendChatMessage(turn.prompt, history);
       const answer =
         chatResult.response ||
@@ -232,7 +269,7 @@ export function useAgentSession(
 
       soundEngine.playComplete();
     },
-    [updateTurn, appendAudit, audit]
+    [updateTurn, appendAudit, audit, takeRedactedScreenshotForTurn]
   );
 
   // ─── Vision Mode (WebSocket → native CDP agent) ─────────────────────────
@@ -244,6 +281,11 @@ export function useAgentSession(
       const [connectStep, perceiveStep, describeStep, reasonStep] = steps;
 
       if (connectStep) updateStep(turn.id, connectStep.id, { status: "active" });
+
+      // Pre-screenshot in-DOM redaction: apply placeholders before capturing
+      if (visualsRef.current.autoRedact) {
+        await takeRedactedScreenshotForTurn(turn.id, turn.prompt);
+      }
 
       const conn = new AgentConnection({
         onConnected: () => {
@@ -327,6 +369,9 @@ export function useAgentSession(
         // Keep only the newest frame: it is the one that explains the action
         // about to be taken, and a per-step gallery would grow without bound.
         onScreenshot: (msg: WsScreenshot) => {
+          // If autoRedact is active, do not overwrite the pre-redacted screenshot
+          if (visualsRef.current.autoRedact) return;
+
           updateTurn(turn.id, (prev) => ({
             ...prev,
             screenshot: {

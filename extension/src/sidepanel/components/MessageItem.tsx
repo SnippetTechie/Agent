@@ -74,14 +74,11 @@ function MessageItemInner({
       <div className="flex max-w-[92%] flex-col gap-2">
         {/* Ordered to match the agent's own sequence: what it saw, what it is
             doing, what it needs, and finally the answer. */}
-        {turn.description && (
-          <ScreenDescriptionCard
-            description={turn.description}
-            screenshot={turn.screenshot?.image}
-          />
-        )}
-        {turn.screenshot && !turn.description && (
+        {turn.screenshot && (
           <ScreenshotPreviewCard preview={turn.screenshot} />
+        )}
+        {turn.description && (
+          <ScreenDescriptionCard description={turn.description} />
         )}
         <ActionCard turn={turn} />
         {hasAnalysis && <VlmAnalysisCard analysis={turn.analysis} />}
