@@ -44,7 +44,7 @@ class AgentRunConfig:
     max_steps: int = 15
     max_actions_per_step: int = 3
     # Stop the run when the same action+index repeats this many times.
-    loop_threshold: int = 3
+    loop_threshold: int = 2
     # After a click/type, give the page a moment before re-reading it.
     settle_seconds: float = 0.15
     done_text_fallback: str = "Task completed."
@@ -314,19 +314,12 @@ class AgentLoop:
                 # If a message or target input was already typed in a previous step, and the model now
                 # tries to re-type the search contact name or re-click, finish with done immediately!
                 task_lower = config.task.lower()
-                is_msg_task = any(m in task_lower for m in ["send", "message", "whatsapp", "slack", "text", "mail"])
-                if is_msg_task and atype in ("type", "click"):
-                    message_was_sent = False
-                    for prev_entry in self._history:
-                        for prev_act in prev_entry.get("actions", []):
-                            if prev_act.get("action") == "type":
-                                prev_text = str(prev_act.get("detail", "")).strip().strip("'\"").lower()
-                                if prev_text and prev_text in task_lower and not any(prev_text == kw for kw in ["search", "whatsapp", "tab"]):
-                                    message_was_sent = True
-                                    break
-                    if message_was_sent:
-                        logger.info("[loop] Requested message was already sent in an earlier step; auto-completing task with done")
-                        kept = [{"type": "done", "success": True, "text": "Task completed: message sent successfully."}]
+                is_msg_task = any(m in task_lower for m in ["send", "message", "whatsapp", "slack", "text", "mail", "dm", "tweet", "post", "say", "chat"])
+                if is_msg_task and atype in ("type", "click", "navigate", "press"):
+                    sent, sent_text = prompts.was_message_sent(config.task, self._history)
+                    if sent:
+                        logger.info("[loop] Requested message %r was already sent in an earlier step; auto-completing task with done", sent_text)
+                        kept = [{"type": "done", "success": True, "text": f"Task completed: message '{sent_text}' sent successfully."}]
                         break
 
                 # Fast-track: if model proposes clicking a message input box when asked to send a message,
@@ -347,9 +340,16 @@ class AgentLoop:
                                 atype = "type"
 
                 key = _proposed_key(action)
-                threshold = 10 if action.get("new_tab") else config.loop_threshold
+                # If identical type action was already executed, block immediate repetition (threshold 1).
+                # For clicking or other actions, use loop_threshold (default 2).
+                threshold = 1 if atype == "type" else (10 if action.get("new_tab") else config.loop_threshold)
                 if counts.get(key, 0) >= threshold:
                     blocked.append(key)
+                    if is_msg_task:
+                        sent, sent_text = prompts.was_message_sent(config.task, self._history)
+                        if sent:
+                            kept = [{"type": "done", "success": True, "text": f"Task completed: message '{sent_text}' sent successfully."}]
+                            break
                     continue
                 kept.append(action)
 
@@ -459,6 +459,19 @@ class AgentLoop:
                     "results": record.results,
                 }
             )
+
+            # Auto-completion check for communication tasks:
+            # If the user requested to send a message and that message was just typed and submitted,
+            # and no follow-up action (e.g. waiting for a reply) was requested, mark as done immediately!
+            task_lower = config.task.lower()
+            is_msg_task = any(m in task_lower for m in ["send", "message", "whatsapp", "slack", "text", "mail", "dm", "tweet", "post", "say", "chat"])
+            if is_msg_task and done_payload is None:
+                has_followup = any(w in task_lower for w in ["wait", "reply", "respond", "summar", "tell me", "read ", "check "])
+                if not has_followup:
+                    sent, sent_text = prompts.was_message_sent(config.task, self._history)
+                    if sent:
+                        logger.info("[loop] Target message %r successfully sent at step %d; auto-completing run with done", sent_text, step)
+                        done_payload = {"type": "done", "success": True, "text": f"Message '{sent_text}' sent successfully."}
 
             await self._emit(
                 {
@@ -609,6 +622,9 @@ class AgentLoop:
                 if index is None:
                     return _fail("click", "missing index")
                 result = await self.session.click(index, double=bool(action.get("double")))
+                if isinstance(result, dict):
+                    result.setdefault("index", index)
+                    result.setdefault("detail", f"[{index}]")
                 return result
 
             if action_type == "type":
@@ -616,18 +632,27 @@ class AgentLoop:
                 if index is None:
                     return _fail("type", "missing index")
                 text = str(action.get("text", ""))
-                return await self.session.type_text(
+                result = await self.session.type_text(
                     index,
                     text,
                     submit=bool(action.get("submit")),
                     clear=action.get("clear", True) is not False,
                 )
+                if isinstance(result, dict):
+                    result.setdefault("index", index)
+                    result.setdefault("text", text)
+                    result.setdefault("detail", f"typed {text!r} into [{index}]")
+                return result
 
             if action_type == "navigate":
                 url = str(action.get("url", "")).strip()
                 if not url:
                     return _fail("navigate", "missing url")
-                return await self.session.navigate(url, new_tab=bool(action.get("new_tab")))
+                result = await self.session.navigate(url, new_tab=bool(action.get("new_tab")))
+                if isinstance(result, dict):
+                    result.setdefault("url", url)
+                    result.setdefault("detail", url)
+                return result
 
             if action_type == "scroll":
                 return await self.session.scroll(
@@ -780,12 +805,15 @@ def _action_key(action: dict[str, Any]) -> str:
     if not action.get("ok", True):
         return f"{name}:failed"
     index = action.get("index")
+    txt = action.get("text")
+    if index is not None and txt:
+        return f"{name}[{index}]:{str(txt)[:30].strip().lower()}"
     if index is not None:
         return f"{name}[{index}]"
     if action.get("url"):
         return f"{name}:{str(action['url'])[:60]}"
-    if action.get("text"):
-        return f"{name}:{str(action['text'])[:40]}"
+    if txt:
+        return f"{name}:{str(txt)[:40].strip().lower()}"
     if action.get("key"):
         return f"{name}:{action['key']}"
     return str(name)
@@ -794,13 +822,16 @@ def _action_key(action: dict[str, Any]) -> str:
 def _proposed_key(action: dict[str, Any]) -> str:
     """Signature of a proposed (not yet executed) action."""
     name = str(action.get("type", "?"))
+    txt = action.get("text")
+    if action.get("index") is not None and txt:
+        return f"{name}[{action['index']}]:{str(txt)[:30].strip().lower()}"
     if action.get("index") is not None:
         return f"{name}[{action['index']}]"
     if action.get("url"):
         prefix = "new_tab:" if action.get("new_tab") else ""
         return f"{name}:{prefix}{str(action['url'])[:60]}"
-    if action.get("text"):
-        return f"{name}:{str(action['text'])[:40]}"
+    if txt:
+        return f"{name}:{str(txt)[:40].strip().lower()}"
     if action.get("key"):
         return f"{name}:{action['key']}"
     return name

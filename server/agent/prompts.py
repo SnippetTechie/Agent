@@ -19,7 +19,9 @@ re-prefilling it. Prompt size was measured to be nearly free for this reason.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
 
 # ---------------------------------------------------------------------------
 # Output schema - flat, minimal, and strictly action-only.
@@ -191,24 +193,13 @@ def build_step_prompt(
 
     parts.append(f"<goal>\n{task}\n</goal>")
 
-    # Check if a message or input action was already executed in history
-    sent_detail = ""
-    for h in history:
-        for a in h.get("actions", []):
-            if a.get("action") == "type":
-                d = str(a.get("detail", "")).strip()
-                # Check if this detail is part of the goal (e.g. 'helooo' from "send message helooo")
-                task_lower = task.lower()
-                clean_d = d.strip("'\"").lower()
-                if clean_d and clean_d in task_lower and not any(clean_d == kw for kw in ["search", "whatsapp", "tab"]):
-                    sent_detail = d
-                    break
-
-    if sent_detail:
+    sent, sent_text = was_message_sent(task, history)
+    if sent:
         reminder = (
-            f"<reminder>Step {step}/{max_steps}. You ALREADY typed and submitted the requested message {sent_detail!r} in a previous step! "
-            'The task is 100% FINISHED. Reply {"actions":[{"type":"done","success":true,"text":"Message sent."}]} NOW. '
-            "DO NOT click or type anything else!</reminder>"
+            f"<reminder>Step {step}/{max_steps}. CRITICAL: You ALREADY typed and submitted the requested message {sent_text!r} in an earlier step! "
+            "Your task is 100% FINISHED and SUCCESSFUL. "
+            'You MUST reply ONLY with: {"actions":[{"type":"done","success":true,"text":"Message sent successfully."}]} '
+            "DO NOT click, search, or type anything else! Call done now.</reminder>"
         )
     else:
         reminder = (
@@ -231,6 +222,79 @@ def build_step_prompt(
     return full_prompt
 
 
+def extract_target_message(task: str) -> str | None:
+    """Extract message payload from task string (e.g. 'send message \"helooo\"' -> 'helooo')."""
+    # 1. Check for quotes: '...', "...", `...`
+    quotes = re.findall(r'["\'`](.+?)["\'`]', task)
+    if quotes:
+        return quotes[-1].strip()
+
+    # 2. Check for keywords: message ..., msg ..., say ..., text ...
+    m = re.search(
+        r'(?:send(?:ing)?\s+(?:a\s+)?(?:message|msg|text)|say(?:ing)?|text(?:ing)?)\s+[:\s]?["\'`]?([A-Za-z0-9_!?,. ]+?)["\'`]?(?:\s+to\s+|$)',
+        task,
+        re.I,
+    )
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def get_typed_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return all type actions executed so far with their index and text."""
+    typed: list[dict[str, Any]] = []
+    for h in history:
+        for a in h.get("actions", []):
+            if a.get("action") == "type":
+                txt = a.get("text")
+                if not txt and a.get("detail"):
+                    m = re.search(r"['\"](.+?)['\"]", str(a.get("detail")))
+                    if m:
+                        txt = m.group(1)
+                if txt:
+                    typed.append({"text": str(txt).strip(), "index": a.get("index"), "step": h.get("step")})
+        for r in h.get("results", []):
+            m = re.search(r"typed\s+['\"](.+?)['\"]\s+into\s+\[?(\d*)\]?", str(r), re.I)
+            if m:
+                txt = m.group(1).strip()
+                idx = int(m.group(2)) if m.group(2) else None
+                if not any(t["text"].lower() == txt.lower() and t.get("index") == idx for t in typed):
+                    typed.append({"text": txt, "index": idx, "step": h.get("step")})
+    return typed
+
+
+def was_message_sent(task: str, history: list[dict[str, Any]]) -> tuple[bool, str]:
+    """Check if the requested message or communication payload was already typed and sent."""
+    target_msg = extract_target_message(task)
+    task_lower = task.lower()
+    typed_records = get_typed_history(history)
+
+    if not typed_records:
+        return False, ""
+
+    # Contact / recipient extraction to prevent confusing contact search with message body
+    contact_match = re.search(r'(?:search\s+for|find|to|chat\s+with)\s+([A-Za-z0-9_]+)', task, re.I)
+    contact_name = contact_match.group(1).strip().lower() if contact_match else ""
+
+    for rec in typed_records:
+        txt = rec["text"]
+        txt_lower = txt.lower()
+
+        # If we have an explicit target message from quotes/regex
+        if target_msg:
+            t_lower = target_msg.lower()
+            if txt_lower == t_lower or t_lower in txt_lower or (len(txt_lower) >= 3 and txt_lower in t_lower):
+                return True, txt
+
+        # If the typed text is contained in the task, and is NOT the contact search query
+        if len(txt_lower) >= 2 and txt_lower in task_lower:
+            skip_words = ["search", "whatsapp", "slack", "chrome", "google", "browser", "tab", "open", "find", "message", "send"]
+            if txt_lower not in skip_words and txt_lower != contact_name:
+                return True, txt
+
+    return False, ""
+
+
 def _render_history(history: list[dict[str, Any]]) -> list[str]:
     """Render the last few steps in full, older ones as one line."""
     lines: list[str] = []
@@ -242,10 +306,27 @@ def _render_history(history: list[dict[str, Any]]) -> list[str]:
         if entry.get("thought"):
             lines.append(f"    thought: {entry['thought']}")
         for action in entry.get("actions", []):
-            lines.append(f"    did: {action.get('action')} {action.get('detail', '')}".rstrip())
+            detail = action.get("detail")
+            if not detail:
+                txt = action.get("text")
+                idx = action.get("index")
+                if txt is not None and idx is not None:
+                    detail = f"typed {txt!r} into [{idx}]"
+                elif idx is not None:
+                    detail = f"[{idx}]"
+                elif action.get("url"):
+                    detail = action.get("url")
+                else:
+                    detail = ""
+            act_name = str(action.get('action', ''))
+            if detail.startswith(act_name) or (act_name == "type" and detail.startswith("typed")) or (act_name == "click" and detail.startswith("clicked")):
+                lines.append(f"    did: {detail}".rstrip())
+            else:
+                lines.append(f"    did: {act_name} {detail}".rstrip())
         for result in entry.get("results", []):
             lines.append(f"    result: {result}")
     return lines
+
 
 
 def compact_history(history: list[dict[str, Any]], keep_last: int = 2) -> list[dict[str, Any]]:
