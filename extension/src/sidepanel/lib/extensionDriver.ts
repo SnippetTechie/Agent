@@ -672,8 +672,9 @@ export async function executeDriverAction(
             await waitForTabLoad(tab.id, 6000);
           }
         }
-        // Brief settle time after DOM complete
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        // Brief settle time after DOM complete: SPAs like WhatsApp Web take 2s to hydrate chats
+        const isSpa = (req.url || "").includes("whatsapp.com") || (req.url || "").includes("slack.com") || (req.url || "").includes("twitter.com");
+        await new Promise((resolve) => setTimeout(resolve, isSpa ? 2200 : 800));
       }
       return {
         type: "DRIVER_RESPONSE",
@@ -771,13 +772,29 @@ export async function executeDriverAction(
             target: { tabId },
             func: inPageExtract,
           });
-          const result = (res?.result as Record<string, unknown>) || {
+          let result = (res?.result as Record<string, unknown>) || {
             ok: true,
             url: tabUrl,
             title: tab.title || "",
             elements: [],
             text: "",
           };
+
+          // If page is on a loading splash screen (like WhatsApp "Loading your chats..."), wait and re-extract
+          const pageTxt = String(result.text || "");
+          const elList = (result.elements as Array<unknown>) || [];
+          if (pageTxt.includes("Loading your chats") || pageTxt.includes("Connecting...") || (elList.length < 3 && !tabUrl.startsWith("about:") && !tabUrl.startsWith("chrome:"))) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            try {
+              const [retryRes] = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: inPageExtract,
+              });
+              if (retryRes?.result) {
+                result = retryRes.result as Record<string, unknown>;
+              }
+            } catch {}
+          }
 
           // Draw bounding boxes if overlay is enabled
           const elements = (result.elements as Array<{ i: number; x: number; y: number; w: number; h: number }>) || [];

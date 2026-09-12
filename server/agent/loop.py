@@ -310,6 +310,42 @@ class AgentLoop:
                             kept.append({"type": "done", "success": True, "text": summary_text})
                         continue
 
+                # Check for post-completion regression loop:
+                # If a message or target input was already typed in a previous step, and the model now
+                # tries to re-type the search contact name or re-click, finish with done immediately!
+                task_lower = config.task.lower()
+                is_msg_task = any(m in task_lower for m in ["send", "message", "whatsapp", "slack", "text", "mail"])
+                if is_msg_task and atype in ("type", "click"):
+                    message_was_sent = False
+                    for prev_entry in self._history:
+                        for prev_act in prev_entry.get("actions", []):
+                            if prev_act.get("action") == "type":
+                                prev_text = str(prev_act.get("detail", "")).strip().strip("'\"").lower()
+                                if prev_text and prev_text in task_lower and not any(prev_text == kw for kw in ["search", "whatsapp", "tab"]):
+                                    message_was_sent = True
+                                    break
+                    if message_was_sent:
+                        logger.info("[loop] Requested message was already sent in an earlier step; auto-completing task with done")
+                        kept = [{"type": "done", "success": True, "text": "Task completed: message sent successfully."}]
+                        break
+
+                # Fast-track: if model proposes clicking a message input box when asked to send a message,
+                # convert it directly to typing the message with submit:true to avoid wasting a step
+                if atype == "click" and is_msg_task:
+                    idx = action.get("index")
+                    elements = state.get("elements", [])
+                    matched_el = next((e for e in elements if e.get("i") == idx), None)
+                    if matched_el:
+                        lbl = str(matched_el.get("label", "")).lower()
+                        if "type a message" in lbl or matched_el.get("tag") in ("input", "textarea") or matched_el.get("secret"):
+                            import re
+                            msg_match = re.search(r'["\']([^"\']+)["\']', config.task) or re.search(r'message\s+([A-Za-z0-9_!]+)', config.task, re.I)
+                            if msg_match:
+                                target_msg = msg_match.group(1)
+                                logger.info("[loop] Model proposed click on message input [%s]; fast-tracking to type %r", idx, target_msg)
+                                action = {"type": "type", "index": idx, "text": target_msg, "submit": True}
+                                atype = "type"
+
                 key = _proposed_key(action)
                 threshold = 10 if action.get("new_tab") else config.loop_threshold
                 if counts.get(key, 0) >= threshold:
@@ -409,6 +445,9 @@ class AgentLoop:
                         "thought": record.thought,
                     }
                 )
+
+            # Settle delay: allow dynamic single-page apps (WhatsApp, Slack, Twitter) time to render DOM changes
+            await asyncio.sleep(0.35)
 
             record.action_ms = (time.perf_counter() - action_started) * 1000.0
 
