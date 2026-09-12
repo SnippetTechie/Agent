@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# Allow pre-built extension to be loaded directly without build tools
+!extension/dist/**
 .vite/
 *.log
 /screenshots/

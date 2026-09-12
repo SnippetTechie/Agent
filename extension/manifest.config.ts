@@ -52,6 +52,8 @@ export default defineManifest({
     "https://*.supabase.co/*",
     "https://accounts.google.com/*",
     "https://www.googleapis.com/*",
+    "https://varma.jrushvj.dev/*",
+    "wss://varma.jrushvj.dev/*",
   ],
   icons: {
     16: "public/icons/icon16.png",

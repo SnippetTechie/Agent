@@ -2,14 +2,9 @@ import { loadLocalState, saveLocalState } from "./storage.js";
 
 const STORAGE_KEY = "varma.server.url";
 
-export const DEFAULT_RECEIVER_URL: string =
-  (typeof import.meta !== "undefined" &&
-  import.meta.env &&
-  typeof import.meta.env.VITE_RECEIVER_URL === "string"
-    ? import.meta.env.VITE_RECEIVER_URL
-    : "") || "https://varma.jrushvj.dev";
+export const DEFAULT_RECEIVER_URL = "https://varma.jrushvj.dev";
 
-let cachedServerUrl: string = DEFAULT_RECEIVER_URL.replace(/\/+$/, "");
+let cachedServerUrl: string = DEFAULT_RECEIVER_URL;
 
 export async function getServerBaseUrl(): Promise<string> {
   try {
