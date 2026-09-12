@@ -121,7 +121,14 @@ RULES
 12. The user approves state-changing actions one at a time, so propose exactly
     one such action per step.
 13. NEVER use "navigate" with a URL you are already on, UNLESS opening a new tab with "new_tab":true (e.g. when asked to create or open tabs). If you are already at that URL on the current tab and task is finished, call done.
-14. NEVER re-search for the same query if the current page already displays the topic."""
+14. NEVER re-search for the same query if the current page already displays the topic.
+15. MESSAGING APPS (WhatsApp, Slack, Telegram, Teams):
+    - When searching for a contact and sending a message:
+      a) Type the contact name into the search field.
+      b) Click the contact name from the chat list to open the conversation.
+      c) DO NOT click the contact name again! Look for the message input field (often labeled "Type a message", role="textbox", or contenteditable).
+      d) Type the requested message into the message input field with "submit":true.
+      e) Call {"type":"done","success":true,"text":"Message sent."} as soon as the message is submitted."""
 
 
 def describe_actions(actions: list[dict[str, Any]]) -> str:

@@ -190,53 +190,150 @@ function inPageExtract() {
   };
 }
 
-// In-page click function
+// In-page click function with full pointer + mouse event chain for modern SPAs (WhatsApp, Slack, React)
 function inPageClick(index: number) {
   const nodes = (window as any).__varmaNodes || [];
   const el = nodes[index] as HTMLElement | undefined;
   if (!el) return { ok: false, action: "click", index, error: `Element [${index}] not found in DOM` };
 
-  el.scrollIntoView({ block: "center", inline: "nearest" });
-  el.focus();
+  try {
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+  } catch {}
+  try {
+    el.focus();
+  } catch {}
+
+  const rect = el.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
+
+  const mouseInit: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    view: window,
+    clientX,
+    clientY,
+    buttons: 1,
+  };
+
+  // Modern SPAs (WhatsApp, Facebook, Twitter, Slack) listen to pointer and mouse event sequences
+  try {
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...mouseInit, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", mouseInit));
+    el.dispatchEvent(new PointerEvent("pointerup", { ...mouseInit, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...mouseInit, buttons: 0 }));
+  } catch {}
+
   el.click();
+
+  // Also trigger on clickable row/button ancestor if this was an icon/text child inside a chat row
+  const clickableParent = el.closest('button, a, [role="button"], [role="row"], [role="listitem"], [role="tab"]') as HTMLElement | null;
+  if (clickableParent && clickableParent !== el) {
+    try {
+      clickableParent.dispatchEvent(new PointerEvent("pointerdown", { ...mouseInit, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      clickableParent.dispatchEvent(new MouseEvent("mousedown", mouseInit));
+      clickableParent.dispatchEvent(new PointerEvent("pointerup", { ...mouseInit, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0 }));
+      clickableParent.dispatchEvent(new MouseEvent("mouseup", { ...mouseInit, buttons: 0 }));
+      clickableParent.click();
+    } catch {}
+  }
+
   return { ok: true, action: "click", index, label: el.textContent?.trim().slice(0, 40) || "" };
 }
 
-// In-page type function
+// In-page type function supporting standard inputs AND contenteditable rich-text editors (WhatsApp Web, Lexical, Draft.js)
 function inPageType(index: number, text: string, submit: boolean) {
   const nodes = (window as any).__varmaNodes || [];
   const el = nodes[index] as HTMLElement | undefined;
   if (!el) return { ok: false, action: "type", index, error: `Element [${index}] not found in DOM` };
 
-  el.scrollIntoView({ block: "center", inline: "nearest" });
-  el.focus();
+  try {
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+  } catch {}
+  try {
+    el.focus();
+  } catch {}
 
+  // 1. Standard HTML inputs and textareas
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    el.value = text;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    try {
+      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) {
+        desc.set.call(el, text);
+      } else {
+        el.value = text;
+      }
+    } catch {
+      el.value = text;
+    }
+
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
 
     if (submit) {
       if (el.form) {
-        el.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-        el.form.submit();
-      } else {
-        const enterEvent = new KeyboardEvent("keydown", {
-          key: "Enter",
-          code: "Enter",
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        });
-        el.dispatchEvent(enterEvent);
+        try {
+          el.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          el.form.submit();
+        } catch {}
       }
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
     }
     return { ok: true, action: "type", index, text, label: el.placeholder || el.name || "" };
   }
 
+  // 2. Rich Text & Contenteditable (WhatsApp Web, Lexical, Draft.js, Slack)
+  const isContentEditable = el.isContentEditable || el.getAttribute("contenteditable") === "true" || el.getAttribute("role") === "textbox";
+  if (isContentEditable) {
+    try {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      document.execCommand("delete", false);
+    } catch {}
+
+    let inserted = false;
+    try {
+      inserted = document.execCommand("insertText", false, text);
+    } catch {}
+
+    if (!inserted) {
+      el.textContent = text;
+    }
+
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+
+    if (submit) {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+
+      // WhatsApp Web Send button fallback
+      setTimeout(() => {
+        const sendBtn = document.querySelector('button[aria-label="Send"], span[data-icon="send"], button span[data-icon="send"]') as HTMLElement | null;
+        if (sendBtn) {
+          const target = (sendBtn.closest("button") || sendBtn) as HTMLElement;
+          target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+          target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+          target.click();
+        }
+      }, 150);
+    }
+    return { ok: true, action: "type", index, text };
+  }
+
+  // 3. Fallback for custom elements
   el.innerText = text;
   el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
   return { ok: true, action: "type", index, text };
 }
 
@@ -772,6 +869,8 @@ export async function executeDriverAction(
           func: inPageClick,
           args: [index],
         });
+        // Settle delay: allow dynamic single-page apps (WhatsApp, Slack, Gmail) time to mount panels
+        await new Promise((resolve) => setTimeout(resolve, 400));
         return {
           type: "DRIVER_RESPONSE",
           id: req.id,
@@ -796,6 +895,8 @@ export async function executeDriverAction(
           func: inPageType,
           args: [index, req.text || "", req.submit ?? false],
         });
+        // Settle delay: allow input validation and UI feedback to update
+        await new Promise((resolve) => setTimeout(resolve, 400));
         return {
           type: "DRIVER_RESPONSE",
           id: req.id,
