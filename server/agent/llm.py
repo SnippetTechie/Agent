@@ -17,10 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class VLLMError(RuntimeError):
@@ -68,7 +72,7 @@ class VLLMClient:
                 base_url=self.base_url,
                 timeout=httpx.Timeout(self.timeout, connect=5.0),
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
             )
         return self._client
 
@@ -109,12 +113,27 @@ class VLLMClient:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return parsed JSON when ``schema`` is given, else the raw text."""
+        effective_max_tokens = self.max_tokens if max_tokens is None else max_tokens
+
+        # Proactively guard against 4096-token context limit violations:
+        # Estimate prompt tokens (~3.3 chars per token)
+        total_prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        est_tokens = int(total_prompt_chars / 3.3)
+        if est_tokens + effective_max_tokens > 3900 and "googleapis.com" not in self.base_url:
+            clamped = max(64, 4000 - est_tokens)
+            if clamped < effective_max_tokens:
+                logger.info(
+                    "[llm] Clamping max_tokens from %d to %d (est input tokens: %d)",
+                    effective_max_tokens, clamped, est_tokens
+                )
+                effective_max_tokens = clamped
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature if temperature is None else temperature,
             "top_p": self.top_p,
-            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+            "max_tokens": effective_max_tokens,
         }
         if self.seed is not None and "googleapis.com" not in self.base_url:
             payload["seed"] = self.seed
@@ -154,6 +173,35 @@ class VLLMClient:
                 await asyncio.sleep(backoff)
                 backoff *= 2.0
                 continue
+            elif resp.status_code == 400 and ("maximum context length" in resp.text or "input_tokens" in resp.text):
+                # Automatic recovery for context window overflow (e.g. vLLM 4096 limit on large web pages)
+                match = re.search(r"maximum context length is (\d+) tokens.*at least (\d+) input tokens", resp.text)
+                if match:
+                    ctx_len = int(match.group(1))
+                    inp_tok = int(match.group(2))
+                    avail = ctx_len - inp_tok - 4
+                    if avail >= 32 and payload["max_tokens"] > avail:
+                        logger.warning(
+                            "[llm] HTTP 400 context overflow caught. Auto-adjusting max_tokens from %d to %d",
+                            payload["max_tokens"], avail
+                        )
+                        payload["max_tokens"] = avail
+                        resp = await self.client.post("/chat/completions", json=payload)
+                        if resp.status_code < 400:
+                            break
+                    elif avail < 32:
+                        logger.warning("[llm] Input prompt itself exceeded context window, pruning prompt and retrying")
+                        pruned: list[dict[str, Any]] = []
+                        for m in payload["messages"]:
+                            content_str = str(m.get("content", ""))
+                            if m.get("role") == "user" and len(content_str) > 2500:
+                                content_str = content_str[:2200] + "\n...[truncated for context limit]"
+                            pruned.append({**m, "content": content_str})
+                        payload["messages"] = pruned
+                        payload["max_tokens"] = 128
+                        resp = await self.client.post("/chat/completions", json=payload)
+                        if resp.status_code < 400:
+                            break
             break
 
         if resp is None:
@@ -163,8 +211,9 @@ class VLLMClient:
             raise VLLMError(f"LLM HTTP {resp.status_code}: {resp.text[:400]}")
 
         data = resp.json()
-        self.last_usage = data.get("usage") or {}
-        self.last_usage["latency_ms"] = round(self.last_latency_ms, 1)
+        usage = data.get("usage") or {}
+        usage["latency_ms"] = round(self.last_latency_ms, 1)
+        self.last_usage = usage
 
         choices = data.get("choices") or []
         if not choices:
@@ -173,12 +222,12 @@ class VLLMClient:
         content = message.get("content") or ""
 
         if schema is None:
-            return {"text": content, "usage": self.last_usage}
+            return {"text": content, "usage": usage}
 
         parsed = _parse_json(content)
         if parsed is None:
             raise VLLMError(f"Model did not return valid JSON: {content[:300]}")
-        return {"json": parsed, "usage": self.last_usage, "raw": content}
+        return {"json": parsed, "usage": usage, "raw": content}
 
     async def ping(self) -> bool:
         try:

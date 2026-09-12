@@ -30,7 +30,8 @@ export MODEL_VISION="${VLLM_MODEL}"
 export GROUNDING_BASE_URL="http://127.0.0.1:${VLLM_PORT}/v1"
 export GROUNDING_MODEL="${VLLM_MODEL}"
 export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
-export MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
+export MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+export MAX_NUM_SEQS="${MAX_NUM_SEQS:-32}"
 
 # Check for custom Gemma launcher script in ~/pe-x1
 GEMMA_LAUNCHER="${GEMMA_LAUNCHER:-${HOME}/pe-x1/launch_gemma4.sh}"
@@ -46,6 +47,8 @@ fi
 echo "  vLLM Engine Port    : ${VLLM_PORT}"
 echo "  Receiver API Port   : ${RECEIVER_PORT} (Host: ${RECEIVER_HOST})"
 echo "  Logs Directory      : ${LOGS_DIR}"
+echo "  Max Context Length  : ${MAX_MODEL_LEN}"
+echo "  Max Concurrent Seqs : ${MAX_NUM_SEQS}"
 echo "================================================================="
 
 PID_VLLM=""
@@ -53,7 +56,7 @@ PID_RECEIVER=""
 
 cleanup() {
     echo ""
-    echo "[!] Caught shutdown signal! Stopping child processes..."
+    echo "[*] Stopping V.A.R.M.A production services..."
     if [ -n "${PID_RECEIVER:-}" ] && kill -0 "$PID_RECEIVER" 2>/dev/null; then
         kill -TERM "$PID_RECEIVER" 2>/dev/null || true
     fi
@@ -88,6 +91,7 @@ start_vllm() {
             --host "${VLLM_HOST}" \
             --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
             --max-model-len "${MAX_MODEL_LEN}" \
+            --max-num-seqs "${MAX_NUM_SEQS}" \
             --trust-remote-code \
             --dtype bfloat16 \
             >> "${LOGS_DIR}/vllm.log" 2>&1 &

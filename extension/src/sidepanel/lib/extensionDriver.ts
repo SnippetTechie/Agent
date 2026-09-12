@@ -94,7 +94,7 @@ function waitForTabLoad(tabId: number, timeoutMs = 6000): Promise<void> {
 
 // In-page extraction function injected into the target tab
 function inPageExtract() {
-  const MAX_ELEMENTS = 120;
+  const MAX_ELEMENTS = 75;
   const INTERACTIVE = [
     "a[href]", "button", "input", "select", "textarea", "summary",
     "[role=button]", "[role=link]", "[role=textbox]", "[role=checkbox]",
@@ -170,7 +170,7 @@ function inPageExtract() {
       text = ((mainEl as HTMLElement).innerText || mainEl.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
     }
   }
-  text = text.slice(0, 5000);
+  text = text.slice(0, 1500);
 
   const headings = Array.from(document.querySelectorAll("h1,h2,h3"))
     .slice(0, 10)

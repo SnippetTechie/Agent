@@ -29,8 +29,8 @@ EXTRACT_SCRIPT = r"""
   // "Auto-redact" toggle). Default is ON: leaking PII is fatal, and the cost is
   // a few regex passes over text we already have.
   const REDACT = !(opts && opts.redact === false);
-  const MAX_ELEMENTS = 150;
-  const MAX_TEXT = 5000;
+  const MAX_ELEMENTS = 75;
+  const MAX_TEXT = 1500;
   const MAX_LABEL = 70;
 
   const INTERACTIVE = [
@@ -666,7 +666,7 @@ CURSOR_SCRIPT = r"""
 
 # ---------------------------------------------------------------------------
 
-def format_state_for_prompt(state: dict, *, max_elements: int = 220) -> str:
+def format_state_for_prompt(state: dict, *, max_elements: int = 75) -> str:
     """Render extracted state as compact text for the LLM.
 
     Every line is `<index> <tag> "<label>" @(x,y wxh)` which is enough for the
@@ -684,10 +684,10 @@ def format_state_for_prompt(state: dict, *, max_elements: int = 220) -> str:
         lines.append(f"SCROLL: y={scroll.get('y', 0)} of {scroll.get('max', 0)}")
     headings = state.get("headings") or []
     if headings:
-        lines.append("HEADINGS: " + " | ".join(headings[:8]))
+        lines.append("HEADINGS: " + " | ".join(headings[:6]))
 
     elements = state.get("elements") or []
-    lines.append(f"\nINTERACTIVE ELEMENTS ({len(elements)} visible):")
+    lines.append(f"\nINTERACTIVE ELEMENTS ({min(len(elements), max_elements)} shown of {len(elements)}):")
     for el in elements[:max_elements]:
         parts = [f"[{el['i']}]", el.get("tag", "?")]
         label = el.get("label") or ""
@@ -713,8 +713,10 @@ def format_state_for_prompt(state: dict, *, max_elements: int = 220) -> str:
         parts.append(f"@({el['x']},{el['y']} {el['w']}x{el['h']})")
         lines.append(" ".join(parts))
 
-    text = state.get("text") or ""
+    text = (state.get("text") or "").strip()
     if text:
-        lines.append("\nPAGE TEXT:\n" + text)
+        # Cap text to 1500 chars to avoid blowing the LLM context window on dense apps
+        clipped_text = text[:1500] + ("..." if len(text) > 1500 else "")
+        lines.append("\nPAGE TEXT:\n" + clipped_text)
 
     return "\n".join(lines)

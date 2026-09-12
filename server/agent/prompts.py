@@ -175,6 +175,11 @@ def build_step_prompt(
     small model weights the most recent tokens most heavily. Putting the page
     dump after the goal caused the model to forget the goal and keep exploring.
     """
+    # Guard against prompt context exhaustion: keep page_state bounded within ~1500 tokens
+    max_page_chars = 5000
+    if len(state_text) > max_page_chars:
+        state_text = state_text[:max_page_chars].rstrip() + "\n...[remaining page elements truncated for brevity]"
+
     parts: list[str] = []
 
     if history:
@@ -193,7 +198,16 @@ def build_step_prompt(
         "Do NOT navigate to the current URL. Do NOT re-search. Reply with 'done' or the next action.</reminder>"
     )
 
-    return "\n\n".join(parts)
+    full_prompt = "\n\n".join(parts)
+    # Absolute safety cap: ensure prompt never exceeds 7,500 characters (~2,000 tokens)
+    if len(full_prompt) > 7500 and len(state_text) > 2500:
+        clipped_state = state_text[:2500].rstrip() + "\n...[truncated for context limits]"
+        parts[parts.index("<page_state>\n" + state_text + "\n</page_state>")] = (
+            "<page_state>\n" + clipped_state + "\n</page_state>"
+        )
+        full_prompt = "\n\n".join(parts)
+
+    return full_prompt
 
 
 def _render_history(history: list[dict[str, Any]]) -> list[str]:
@@ -213,7 +227,7 @@ def _render_history(history: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def compact_history(history: list[dict[str, Any]], keep_last: int = 3) -> list[dict[str, Any]]:
+def compact_history(history: list[dict[str, Any]], keep_last: int = 2) -> list[dict[str, Any]]:
     """Collapse everything older than ``keep_last`` steps into one line each."""
     if len(history) <= keep_last:
         return history
@@ -227,6 +241,6 @@ def compact_history(history: list[dict[str, Any]], keep_last: int = 3) -> list[d
         summary = "; ".join(
             f"{a.get('action')} {a.get('detail', '')}".strip() for a in actions
         ) or "no action"
-        compacted.append({"step": entry["step"], "compact": True, "summary": summary[:160]})
+        compacted.append({"step": entry["step"], "compact": True, "summary": summary[:120]})
 
     return compacted + history[-keep_last:]
