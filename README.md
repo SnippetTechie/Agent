@@ -1,4 +1,4 @@
-﻿<img width="1024" height="434" alt="image" src="https://github.com/user-attachments/assets/f67eebe9-512d-41a8-8bc0-574d8dd6f788" />
+<img width="1024" height="434" alt="image" src="https://github.com/user-attachments/assets/f67eebe9-512d-41a8-8bc0-574d8dd6f788" />
 
 
 # V.A.R.M.A — On-Device Perception for a Light-Weight Browser Agent
@@ -117,7 +117,7 @@ RECEIVER_HOST=0.0.0.0
 RECEIVER_PORT=8002
 VLLM_BASE_URL=http://127.0.0.1:8000/v1
 VLLM_MODEL=gemma-4-12b-it
-SUPABASE_URL=https://zmnbhuyqncjhwdkgsgxf.supabase.co
+SUPABASE_URL=https://<your-project-ref>.supabase.co
 SUPABASE_STORAGE_BUCKET=redacted-screens
 ```
 
@@ -169,7 +169,7 @@ Expected response:
 V.A.R.M.A isolates every user's tasks and redacted screenshots under their personal namespace: `redacted-screens/users/{user_id}/`.
 
 ### 1. Enable Google Provider in Supabase
-1. Go to [Supabase Dashboard ➔ Authentication ➔ Providers](https://supabase.com/dashboard/project/zmnbhuyqncjhwdkgsgxf/auth/providers).
+1. Go to your **Supabase Dashboard ➔ Authentication ➔ Providers**.
 2. Expand **Google**, toggle to **ON**.
 3. Enter your Google Cloud **Client ID** and **Client Secret**.
 4. Click **Save**.
@@ -185,7 +185,7 @@ V.A.R.M.A isolates every user's tasks and redacted screenshots under their perso
 ### 3. Google Cloud Console Callback
 In your Google Cloud Console OAuth Credentials, verify **Authorized redirect URIs** contains:
 ```text
-https://zmnbhuyqncjhwdkgsgxf.supabase.co/auth/v1/callback
+https://<YOUR_SUPABASE_PROJECT_REF>.supabase.co/auth/v1/callback
 ```
 
 ---
