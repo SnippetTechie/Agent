@@ -331,10 +331,8 @@ class AgentLoop:
                     if matched_el:
                         lbl = str(matched_el.get("label", "")).lower()
                         if "type a message" in lbl or matched_el.get("tag") in ("input", "textarea") or matched_el.get("secret"):
-                            import re
-                            msg_match = re.search(r'["\']([^"\']+)["\']', config.task) or re.search(r'message\s+([A-Za-z0-9_!]+)', config.task, re.I)
-                            if msg_match:
-                                target_msg = msg_match.group(1)
+                            target_msg = prompts.extract_target_message(config.task)
+                            if target_msg:
                                 logger.info("[loop] Model proposed click on message input [%s]; fast-tracking to type %r", idx, target_msg)
                                 action = {"type": "type", "index": idx, "text": target_msg, "submit": True}
                                 atype = "type"
