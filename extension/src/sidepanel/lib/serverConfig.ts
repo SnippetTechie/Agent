@@ -7,7 +7,7 @@ export const DEFAULT_RECEIVER_URL: string =
   import.meta.env &&
   typeof import.meta.env.VITE_RECEIVER_URL === "string"
     ? import.meta.env.VITE_RECEIVER_URL
-    : "") || "http://127.0.0.1:8002";
+    : "") || "https://varma.jrushvj.dev";
 
 let cachedServerUrl: string = DEFAULT_RECEIVER_URL.replace(/\/+$/, "");
 
