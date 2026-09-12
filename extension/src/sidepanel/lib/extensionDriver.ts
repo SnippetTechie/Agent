@@ -26,6 +26,7 @@ export interface DriverActionRequest {
   index?: number;
   text?: string;
   url?: string;
+  new_tab?: boolean;
   submit?: boolean;
   clear?: boolean;
   direction?: "up" | "down";
@@ -345,16 +346,18 @@ function inPageDrawCursor(payload: { x: number; y: number; instant?: boolean; ri
       "position:fixed",
       "left:0",
       "top:0",
-      "width:24px",
-      "height:24px",
+      "width:28px",
+      "height:28px",
       "pointer-events:none",
       "z-index:2147483647",
-      "filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))",
-      "transition:transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1)",
+      "filter:drop-shadow(0 0 10px rgba(34,211,238,0.95)) drop-shadow(0 2px 6px rgba(0,0,0,0.8))",
+      "transition:transform 0.65s cubic-bezier(0.25, 1, 0.5, 1)",
+      "will-change:transform",
     ].join(";");
     cursor.innerHTML =
-      '<svg width="24" height="24" viewBox="0 0 24 24" fill="none">' +
-      '<path d="M4 2.5 L19.5 11.2 L12.4 12.6 L9.1 19.4 Z" fill="#22d3ee" stroke="#04222b" stroke-width="1.5" stroke-linejoin="round"/>' +
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none">' +
+      '<path d="M4 2.5 L19.5 11.2 L12.4 12.6 L9.1 19.4 Z" fill="#22d3ee" stroke="#04222b" stroke-width="2" stroke-linejoin="round"/>' +
+      '<circle cx="4" cy="2.5" r="2" fill="#ffffff"/>' +
       "</svg>";
     (document.documentElement || document.body).appendChild(cursor);
   }
@@ -364,9 +367,9 @@ function inPageDrawCursor(payload: { x: number; y: number; instant?: boolean; ri
     cursor.style.transition = "none";
     cursor.style.transform = `translate(${payload.x}px,${payload.y}px)`;
     void cursor.offsetHeight;
-    cursor.style.transition = "transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1)";
+    cursor.style.transition = "transform 0.65s cubic-bezier(0.25, 1, 0.5, 1)";
   } else {
-    cursor.style.transition = "transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1)";
+    cursor.style.transition = "transform 0.65s cubic-bezier(0.25, 1, 0.5, 1)";
     cursor.style.transform = `translate(${payload.x}px,${payload.y}px)`;
   }
 
@@ -425,21 +428,23 @@ function inPageMoveCursorToElement(index: number, ripple: boolean) {
       "position:fixed",
       "left:0",
       "top:0",
-      "width:24px",
-      "height:24px",
+      "width:28px",
+      "height:28px",
       "pointer-events:none",
       "z-index:2147483647",
-      "filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))",
-      "transition:transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1)",
+      "filter:drop-shadow(0 0 10px rgba(34,211,238,0.95)) drop-shadow(0 2px 6px rgba(0,0,0,0.8))",
+      "transition:transform 0.65s cubic-bezier(0.25, 1, 0.5, 1)",
+      "will-change:transform",
     ].join(";");
     cursor.innerHTML =
-      '<svg width="24" height="24" viewBox="0 0 24 24" fill="none">' +
-      '<path d="M4 2.5 L19.5 11.2 L12.4 12.6 L9.1 19.4 Z" fill="#22d3ee" stroke="#04222b" stroke-width="1.5" stroke-linejoin="round"/>' +
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none">' +
+      '<path d="M4 2.5 L19.5 11.2 L12.4 12.6 L9.1 19.4 Z" fill="#22d3ee" stroke="#04222b" stroke-width="2" stroke-linejoin="round"/>' +
+      '<circle cx="4" cy="2.5" r="2" fill="#ffffff"/>' +
       "</svg>";
     (document.documentElement || document.body).appendChild(cursor);
   }
   cursor.style.display = "";
-  cursor.style.transition = "transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1)";
+  cursor.style.transition = "transform 0.65s cubic-bezier(0.25, 1, 0.5, 1)";
   cursor.style.transform = `translate(${x}px,${y}px)`;
 
   if (ripple) {
@@ -556,7 +561,12 @@ export async function executeDriverAction(
   if (req.action === "navigate") {
     try {
       if (req.url) {
-        if (tab?.id) {
+        if (req.new_tab) {
+          tab = await chrome.tabs.create({ url: req.url, active: true });
+          if (tab?.id) {
+            await waitForTabLoad(tab.id, 6000);
+          }
+        } else if (tab?.id) {
           await chrome.tabs.update(tab.id, { url: req.url });
           await waitForTabLoad(tab.id, 6000);
         } else {
@@ -684,6 +694,17 @@ export async function executeDriverAction(
             } catch {}
           }
 
+          // Keep cursor always visible on screen
+          if (req.show_cursor !== false) {
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId },
+                func: inPageDrawCursor,
+                args: [{ x: 180, y: 180, instant: false }],
+              });
+            } catch {}
+          }
+
           return {
             type: "DRIVER_RESPONSE",
             id: req.id,
@@ -743,7 +764,7 @@ export async function executeDriverAction(
               func: inPageMoveCursorToElement,
               args: [index, true],
             });
-            await new Promise((resolve) => setTimeout(resolve, 220));
+            await new Promise((resolve) => setTimeout(resolve, 650));
           } catch {}
         }
         const [res] = await chrome.scripting.executeScript({
@@ -767,7 +788,7 @@ export async function executeDriverAction(
               func: inPageMoveCursorToElement,
               args: [index, false],
             });
-            await new Promise((resolve) => setTimeout(resolve, 220));
+            await new Promise((resolve) => setTimeout(resolve, 650));
           } catch {}
         }
         const [res] = await chrome.scripting.executeScript({

@@ -45,6 +45,7 @@ from server.agent.llm import VLLMError  # noqa: E402
 from server.agent.session import CDPUnavailable  # noqa: E402
 from server.agent.extension_session import ExtensionSession  # noqa: E402
 from server.redaction.pii_detector import detector  # noqa: E402
+from server.db import supabase  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -77,32 +78,29 @@ _load_dotenv(ENV_FILE)
 HOST = os.getenv("RECEIVER_HOST", "127.0.0.1")
 PORT = int(os.getenv("RECEIVER_PORT", "8002"))
 
-# vLLM. For a remote GPU box, tunnel first:
-#   ssh -p 2222 -L 8000:localhost:8000 -L 8001:localhost:8001 user@host
-#
+# Gemini / vLLM Model Provider detection
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")).strip()
+LLM_API_KEY = GEMINI_API_KEY or os.getenv("VLLM_API_KEY", "EMPTY").strip()
+IS_GEMINI = bool(GEMINI_API_KEY) or "googleapis.com" in os.getenv("VLLM_BASE_URL", "")
+
+DEFAULT_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/openai/"
+    if IS_GEMINI
+    else "http://127.0.0.1:8000/v1"
+)
+DEFAULT_MODEL = "gemini-2.0-flash" if IS_GEMINI else "gemma4-12b"
+
 # Two endpoints, two roles:
-#   :8000  reasoning / screen understanding  (gemma4)
-#   :8001  precision mouse grounding         (groundnext)
-# The grounding endpoint is optional: if it is not served, only the precision
-# path is unavailable and everything else still works.
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1")
-VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4-12b")
-# The name the operator asked for, kept separately from llm.model because
-# resolve_model() silently rewrites llm.model to whatever is actually serving.
-# Comparing against this is what makes "your configured model is not the model
-# answering" visible instead of an invisible fallback.
+#   reasoning / screen understanding  (gemini-2.0-flash or gemma4)
+#   precision mouse grounding         (gemini-2.0-flash or groundnext)
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", DEFAULT_BASE_URL)
+VLLM_MODEL = os.getenv("VLLM_MODEL", DEFAULT_MODEL)
 CONFIGURED_VLLM_MODEL = VLLM_MODEL
 VLLM_MAX_TOKENS = int(os.getenv("VLLM_MAX_TOKENS", "512"))
 
-GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", "http://127.0.0.1:8000/v1")
-GROUNDING_MODEL = os.getenv("GROUNDING_MODEL", "gemma4-12b")
+GROUNDING_BASE_URL = os.getenv("GROUNDING_BASE_URL", VLLM_BASE_URL)
+GROUNDING_MODEL = os.getenv("GROUNDING_MODEL", VLLM_MODEL)
 GROUNDING_MAX_TOKENS = int(os.getenv("GROUNDING_MAX_TOKENS", "256"))
-# Points at the same endpoint as the reasoning model by default, because the
-# deployment that actually runs today is gemma-only: the served gemma4-12b is a
-# vision model and grounds coordinates well enough to play a board game (2-11px
-# measured error, see agent/vision.py). Setting GROUNDING_BASE_URL to :8001 and
-# GROUNDING_MODEL to a dedicated grounding model switches game mode onto it the
-# moment one is loaded - no code change.
 GROUNDING_ENABLED = os.getenv("GROUNDING_ENABLED", "1") != "0"
 
 # Chrome DevTools Protocol endpoint of the browser the user is already using.
@@ -137,6 +135,7 @@ SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 llm = VLLMClient(
     base_url=VLLM_BASE_URL,
     model=VLLM_MODEL,
+    api_key=LLM_API_KEY,
     max_tokens=VLLM_MAX_TOKENS,
     temperature=0.0,
 )
@@ -148,6 +147,7 @@ llm = VLLMClient(
 grounding_llm = VLLMClient(
     base_url=GROUNDING_BASE_URL,
     model=GROUNDING_MODEL,
+    api_key=LLM_API_KEY,
     max_tokens=GROUNDING_MAX_TOKENS,
     temperature=0.0,
 )
@@ -164,6 +164,7 @@ def configure_precision_endpoint(base_url: str, model: str) -> None:
     GROUNDING_MODEL = model
     grounding_llm.base_url = GROUNDING_BASE_URL
     grounding_llm.model = model
+    grounding_llm.api_key = LLM_API_KEY
 
 
 # ---------------------------------------------------------------------------
@@ -222,15 +223,20 @@ def _build_catalog() -> list[dict[str, Any]]:
 def _is_vision_model(model_id: str, declared: set[str] | None = None) -> bool:
     """Whether a model id is known to accept image input.
 
-    Declared explicitly with MODEL_VISION; the gemma4 family is multimodal by
-    construction, so it is recognised without configuration.
+    Gemini and Gemma models are vision-capable by default.
     """
     if declared is None:
         declared = {m.strip() for m in os.getenv("MODEL_VISION", "").split(",") if m.strip()}
     if model_id in declared:
         return True
     lowered = model_id.lower()
-    return "gemma4" in lowered or "gemma-4" in lowered or "-vl" in lowered or "vision" in lowered
+    return (
+        "gemini" in lowered
+        or "gemma" in lowered
+        or "-vl" in lowered
+        or "vision" in lowered
+        or "pixtral" in lowered
+    )
 
 
 # The declared catalog, frozen at import. model_catalog() layers the runtime view
@@ -285,29 +291,22 @@ def _port_open(url: str, default_port: int) -> bool:
         return False
 
 def vllm_reachable() -> bool:
+    if "googleapis.com" in VLLM_BASE_URL:
+        return bool(LLM_API_KEY and LLM_API_KEY != "EMPTY")
     return _port_open(VLLM_BASE_URL, 8000)
 
 
 def grounding_reachable() -> bool:
-    """Coarse, synchronous guess at whether the precision port is open.
-
-    Not a readiness answer, and no longer used to decide anything: an open TCP
-    port does not mean a model is serving. Kept because callers outside this
-    module may still ask.
-    """
+    """Coarse, synchronous guess at whether the precision port is open."""
+    if "googleapis.com" in GROUNDING_BASE_URL:
+        return bool(LLM_API_KEY and LLM_API_KEY != "EMPTY")
     return _port_open(GROUNDING_BASE_URL, 8001)
 
 
 async def _answers(client: VLLMClient) -> bool:
-    """True only when the endpoint returns a real model list.
-
-    An open TCP port is NOT proof that a model is serving. The GPU box is reached
-    through an SSH tunnel, so a forwarded port accepts connections even when
-    nothing is listening on the far end. That produced a "reachable" model with
-    an empty model list - exactly the state that fails a demo with a confusing
-    error at the first grounded click. Ask for the model list and require an
-    answer.
-    """
+    """True only when the endpoint returns a real model list or is a valid cloud API."""
+    if "googleapis.com" in client.base_url:
+        return bool(client.api_key and client.api_key != "EMPTY")
     try:
         models = await client.list_models()
     except Exception:
@@ -583,6 +582,11 @@ async def health() -> dict[str, Any]:
         "models": catalog["catalog"],
         "roles": catalog["roles"],
         "capabilities": caps,
+        "supabase": {
+            "configured": supabase.is_configured(),
+            "url": supabase.url,
+            "bucket": supabase.bucket,
+        },
         "cdp": {
             "url": CDP_URL,
             "reachable": cdp_reachable(),
@@ -715,11 +719,25 @@ async def save_screenshot(request: Request) -> Any:
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         filename = f"{stamp}-{safe[:40]}.png"
 
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id") or ""
         (SCREENSHOTS_DIR / filename).write_bytes(body)
+        storage_url = None
+        if supabase.is_configured():
+            try:
+                storage_url = await supabase.upload_screenshot(
+                    task_id=hint or "manual",
+                    step_number=0,
+                    image_bytes=body,
+                    user_id=user_id,
+                )
+            except Exception:
+                pass
+
         return {
             "ok": True,
             "path": f"screenshots/{filename}",
             "url": f"http://{HOST}:{PORT}/screenshots/{filename}",
+            "storage_url": storage_url,
             "bytes": len(body),
             "timestamp": stamp,
         }
@@ -787,14 +805,16 @@ async def chat(request: Request) -> dict[str, Any]:
         messages = [{"role": "user", "content": data["prompt"]}]
 
     if not vllm_reachable():
+        err_msg = (
+            "Gemini API key is not configured. Please set GEMINI_API_KEY in server/.env"
+            if "googleapis.com" in VLLM_BASE_URL
+            else f"vLLM server is unreachable at {VLLM_BASE_URL}. Start the tunnel (ssh -L 8000:localhost:8000 ...) and try again."
+        )
         return {
             "ok": False,
             "offline": True,
-            "error": "vLLM backend is unreachable.",
-            "response": (
-                "I'm in local standby because the vLLM server is disconnected. "
-                "Start the tunnel (ssh -L 8000:localhost:8000 ...) and try again."
-            ),
+            "error": "LLM backend is unreachable or unconfigured.",
+            "response": err_msg,
             "model": llm.model,
         }
 
@@ -821,13 +841,15 @@ async def agent_ws(websocket: WebSocket) -> None:
     await websocket.accept()
 
     if not vllm_reachable():
+        err_msg = (
+            "Gemini API key is missing. Set GEMINI_API_KEY in server/.env"
+            if "googleapis.com" in VLLM_BASE_URL
+            else f"Cannot reach vLLM at {VLLM_BASE_URL}. Start the tunnel: ssh -L 8000:localhost:8000 user@gpu-host"
+        )
         await websocket.send_json(
             {
                 "type": "ERROR",
-                "error": (
-                    f"Cannot reach vLLM at {VLLM_BASE_URL}. Start the tunnel: "
-                    "ssh -L 8000:localhost:8000 user@gpu-host"
-                ),
+                "error": err_msg,
             }
         )
         await websocket.close()
@@ -950,8 +972,54 @@ async def agent_ws(websocket: WebSocket) -> None:
             tab_scope = str(init.get("tab_scope") or "single").lower()
             active_session.tab_scope = "all" if tab_scope == "all" else "single"
 
+            db_task_id: str | None = None
+            if supabase.is_configured():
+                try:
+                    db_task_id = await supabase.create_task(
+                        task=task,
+                        mode=requested_mode,
+                        user_email=init.get("user_email"),
+                        user_id=init.get("user_id"),
+                    )
+                except Exception:
+                    pass
+
             async def emit(event: dict[str, Any]) -> None:
                 await websocket.send_json(event)
+                if supabase.is_configured() and db_task_id:
+                    try:
+                        etype = event.get("type")
+                        if etype == "STEP_COMPLETE":
+                            step_no = int(event.get("step") or 0)
+                            thought = str(event.get("thought") or "")
+                            actions = event.get("actions") or []
+                            timing = event.get("timing") or {}
+                            lat = float(sum(v for v in timing.values() if isinstance(v, (int, float)))) if isinstance(timing, dict) else 0.0
+                            atype = actions[0].get("type") if (actions and isinstance(actions, list) and isinstance(actions[0], dict)) else "action"
+                            await supabase.log_step(
+                                task_id=db_task_id,
+                                step_number=step_no,
+                                action_type=atype,
+                                action_payload={"actions": actions, "timing": timing},
+                                thought=thought,
+                                latency_ms=lat,
+                            )
+                        elif etype == "DONE":
+                            metrics = event.get("metrics") or {}
+                            steps = int(metrics.get("steps") or 0)
+                            avg_ms = float(metrics.get("avg_step_ms") or 0.0)
+                            await supabase.finish_task(
+                                task_id=db_task_id,
+                                status="completed" if event.get("success") else "failed",
+                                total_steps=steps,
+                                total_latency_ms=avg_ms * steps,
+                            )
+                        elif etype == "STOPPED":
+                            await supabase.finish_task(task_id=db_task_id, status="stopped")
+                        elif etype == "ERROR":
+                            await supabase.finish_task(task_id=db_task_id, status="failed")
+                    except Exception:
+                        pass
 
             loaded_reasoning_model = await llm.resolve_model(VLLM_MODEL)
             # Re-resolve after the model is chosen: which endpoint serves grounding

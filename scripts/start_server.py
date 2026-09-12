@@ -40,9 +40,9 @@ FALLBACKS = {
     "RECEIVER_HOST": "127.0.0.1",
     "RECEIVER_PORT": "8002",
     "VLLM_BASE_URL": "http://127.0.0.1:8000/v1",
-    "VLLM_MODEL": "gemma4-12b",
+    "VLLM_MODEL": "gemma-4-12b-it",
     "GROUNDING_BASE_URL": "http://127.0.0.1:8000/v1",
-    "GROUNDING_MODEL": "gemma4-12b",
+    "GROUNDING_MODEL": "gemma-4-12b-it",
     "CDP_URL": "http://localhost:9222",
     "AGENT_MAX_STEPS": "15",
     "AGENT_MAX_ACTIONS_PER_STEP": "3",
@@ -76,8 +76,9 @@ def read_env_file() -> dict[str, str]:
 
 def receiver_already_running(host: str, port: str) -> bool:
     """Return whether a healthy receiver already owns the configured port."""
+    dial_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
     try:
-        with urllib.request.urlopen("http://" + host + ":" + port + "/health", timeout=2) as response:
+        with urllib.request.urlopen("http://" + dial_host + ":" + port + "/health", timeout=2) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
         return False
@@ -88,8 +89,16 @@ def main() -> int:
     skip_file = env.get("VARMA_SKIP_ENV_FILE", "0") not in ("0", "", "false")
     file_values = {} if skip_file else read_env_file()
 
+    has_gemini = bool(env.get("GEMINI_API_KEY") or file_values.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or file_values.get("GOOGLE_API_KEY"))
+    effective_fallbacks = dict(FALLBACKS)
+    if has_gemini:
+        effective_fallbacks["VLLM_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        effective_fallbacks["VLLM_MODEL"] = "gemini-2.0-flash"
+        effective_fallbacks["GROUNDING_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        effective_fallbacks["GROUNDING_MODEL"] = "gemini-2.0-flash"
+
     source: dict[str, str] = {}
-    for key, fallback in FALLBACKS.items():
+    for key, fallback in effective_fallbacks.items():
         if key in env and env[key]:
             source[key] = "env"
         elif key in file_values:

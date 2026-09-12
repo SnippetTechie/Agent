@@ -294,24 +294,33 @@ class AgentLoop:
                     continue
 
                 if atype == "navigate":
+                    is_new_tab = bool(action.get("new_tab"))
+                    task_lower = config.task.lower()
+                    is_tab_task = any(k in task_lower for k in ["tab", "tabs", "new tab", "window", "windows"])
+                    if is_tab_task:
+                        action["new_tab"] = True
+                        is_new_tab = True
+
                     nav_url = str(action.get("url") or "").strip().rstrip("/").lower()
                     clean_nav = nav_url.replace("https://", "").replace("http://", "")
-                    if clean_curr and clean_nav and (clean_curr == clean_nav or clean_curr.startswith(clean_nav) or clean_nav.startswith(clean_curr)):
+                    if not is_new_tab and clean_curr and clean_nav and (clean_curr == clean_nav or clean_curr.startswith(clean_nav) or clean_nav.startswith(clean_curr)):
                         blocked.append(f"navigate to {nav_url} (already on this page)")
-                        task_lower = config.task.lower()
                         if any(k in task_lower for k in ["summar", "search", "read", "who is", "what is", "tell me about"]):
                             summary_text = await self._summarize_page(state, config.task)
                             kept.append({"type": "done", "success": True, "text": summary_text})
                         continue
 
                 key = _proposed_key(action)
-                if counts.get(key, 0) >= config.loop_threshold:
+                threshold = 10 if action.get("new_tab") else config.loop_threshold
+                if counts.get(key, 0) >= threshold:
                     blocked.append(key)
                     continue
                 kept.append(action)
 
             for key in blocked:
-                record.results.append(f"BLOCKED: {key} already repeated {counts[key]}x - pick another action")
+                times = counts.get(key)
+                repeat_str = f" repeated {times}x" if times else ""
+                record.results.append(f"BLOCKED: {key}{repeat_str} - pick another action")
             if blocked and not kept:
                 await self._emit(
                     {
@@ -749,7 +758,8 @@ def _proposed_key(action: dict[str, Any]) -> str:
     if action.get("index") is not None:
         return f"{name}[{action['index']}]"
     if action.get("url"):
-        return f"{name}:{str(action['url'])[:60]}"
+        prefix = "new_tab:" if action.get("new_tab") else ""
+        return f"{name}:{prefix}{str(action['url'])[:60]}"
     if action.get("text"):
         return f"{name}:{str(action['text'])[:40]}"
     if action.get("key"):

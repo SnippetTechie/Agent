@@ -74,6 +74,8 @@ export interface VisualSettingsInput {
   autoRedact: boolean;
 }
 
+import type { AuthUser } from "./useAuthUser.js";
+
 export function useAgentSession(
   approvalMode: ApprovalMode,
   persistEnabled: boolean,
@@ -82,7 +84,8 @@ export function useAgentSession(
     showCursor: true,
     autoRedact: true,
   },
-  tabScope: TabScope = "single"
+  tabScope: TabScope = "single",
+  user?: AuthUser | null
 ) {
   const { t } = useI18n();
   const [turns, setTurns] = useState<AgentTurn[]>([]);
@@ -94,6 +97,9 @@ export function useAgentSession(
   const approvalResolvers = useRef<Map<string, (approved: boolean) => void | Promise<void>>>(new Map());
   /** Timers that auto-resolve an "auto" approval; cleared on unmount. */
   const approvalTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const userRef = useRef(user);
+  userRef.current = user;
 
   // Keep the latest visual settings reachable from the run loop without
   // re-creating its callbacks on every toggle.
@@ -214,7 +220,7 @@ export function useAgentSession(
       label = "Pre-task analysis"
     ) => {
       try {
-        const res = await captureRedactedScreenshot(promptText);
+        const res = await captureRedactedScreenshot(promptText, userRef.current?.id);
         if (res.ok && res.dataUrl) {
           const item = {
             id: nextId("screenshot"),
@@ -665,6 +671,8 @@ export function useAgentSession(
           showCursor: visualsRef.current.showCursor,
           autoRedact: visualsRef.current.autoRedact,
           tabScope: tabScopeRef.current,
+          userId: userRef.current?.id,
+          userEmail: userRef.current?.email,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : "Connection failed";

@@ -39,6 +39,7 @@ export default defineManifest({
     "tabs",
     "storage",
     "tabGroups",
+    "identity",
   ],
   host_permissions: [
     "<all_urls>",
@@ -48,6 +49,9 @@ export default defineManifest({
     "http://localhost:8002/*",
     "ws://127.0.0.1:8002/*",
     "ws://localhost:8002/*",
+    "https://*.supabase.co/*",
+    "https://accounts.google.com/*",
+    "https://www.googleapis.com/*",
   ],
   icons: {
     16: "public/icons/icon16.png",
@@ -70,6 +74,6 @@ export default defineManifest({
     //     WebSocket to Google's speech service internally; without this,
     //     recognition starts but immediately errors with no transcript
     extension_pages:
-      "script-src 'self'; object-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 http://127.0.0.1:8002 http://localhost:8002 ws://127.0.0.1:8002 ws://localhost:8002 wss://www.google.com https://www.google.com;",
+      "script-src 'self'; object-src 'self'; connect-src 'self' http: https: ws: wss:;",
   },
 });

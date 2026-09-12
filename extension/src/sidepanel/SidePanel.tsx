@@ -4,6 +4,8 @@ import { MessageFeed } from "./components/MessageFeed.js";
 import { InputDock } from "./components/InputDock.js";
 import { PrivacyAuditModal } from "./components/PrivacyAuditModal.js";
 import { PrivacyNoticeBanner } from "./components/PrivacyNoticeBanner.js";
+import { WelcomeScreen } from "./components/WelcomeScreen.js";
+import { useAuthUser } from "./hooks/useAuthUser.js";
 import { useAgentSession } from "./hooks/useAgentSession.js";
 import { useApprovalMode } from "./hooks/useApprovalMode.js";
 import { usePrivacyNotice } from "./hooks/usePrivacyNotice.js";
@@ -11,6 +13,16 @@ import { useTabScope } from "./hooks/useTabScope.js";
 import { useVisualSettings } from "./hooks/useVisualSettings.js";
 
 export function SidePanel() {
+  const {
+    user,
+    isAuthenticated,
+    loading: authLoading,
+    authError,
+    clearError,
+    redirectUrl,
+    loginWithGoogle,
+    logout,
+  } = useAuthUser();
   const [approvalMode, setApprovalMode] = useApprovalMode();
   const { loaded: noticeLoaded, choice: noticeChoice, respond: respondToNotice } = usePrivacyNotice();
   const persistEnabled = noticeChoice !== "rejected";
@@ -31,9 +43,22 @@ export function SidePanel() {
     approveCurrentTurn,
     denyCurrentTurn,
     clearSession,
-  } = useAgentSession(approvalMode, persistEnabled, visuals, tabScope);
+  } = useAgentSession(approvalMode, persistEnabled, visuals, tabScope, user);
 
   const [auditOpen, setAuditOpen] = useState(false);
+
+  // If not signed in, show the Welcome & Google Sign-In Screen
+  if (!isAuthenticated && !authLoading) {
+    return (
+      <WelcomeScreen
+        onSignIn={loginWithGoogle}
+        loading={authLoading}
+        authError={authError}
+        onClearError={clearError}
+        redirectUrl={redirectUrl}
+      />
+    );
+  }
 
   return (
     <div className="animate-varma-panel-in relative flex h-screen flex-col overflow-hidden bg-varma-bg text-varma-text">
@@ -44,6 +69,8 @@ export function SidePanel() {
         updateVisuals={updateVisuals}
         tabScope={tabScope}
         setTabScope={setTabScope}
+        user={user}
+        onSignOut={logout}
       />
 
       <MessageFeed

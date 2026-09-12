@@ -12,9 +12,7 @@
 
 import type { HealthStatus } from "../types.js";
 import { executeDriverAction, type DriverActionRequest } from "./extensionDriver.js";
-
-const WS_URL = "ws://127.0.0.1:8002/ws/agent";
-const HEALTH_URL = "http://127.0.0.1:8002/health";
+import { getWsUrl, getHealthUrl } from "./serverConfig.js";
 
 // ─── Incoming message types (Server → Extension) ───────────────────────────
 
@@ -315,6 +313,8 @@ export class AgentConnection {
       showCursor?: boolean;
       autoRedact?: boolean;
       tabScope?: "single" | "all";
+      userId?: string;
+      userEmail?: string;
     } = {}
   ): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -337,57 +337,63 @@ export class AgentConnection {
         resolve();
       };
 
-      try {
-        this.ws = new WebSocket(WS_URL);
-      } catch (err) {
-        fail(
-          `WebSocket creation failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        return;
-      }
+      getWsUrl()
+        .then((wsUrl) => {
+          if (this.closed) return;
+          try {
+            this.ws = new WebSocket(wsUrl);
+          } catch (err) {
+            fail(
+              `WebSocket creation failed: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+          }
 
-      this.ws.onopen = () => {
-        // Send the task immediately after connection
-        this.send({
-          type: "START_TASK",
-          task,
-          approval_mode: approvalMode,
-          supports_driver: true,
-          ...(options.maxSteps ? { max_steps: options.maxSteps } : {}),
-          ...(options.showOverlay !== undefined ? { show_overlay: options.showOverlay } : {}),
-          ...(options.showCursor !== undefined ? { show_cursor: options.showCursor } : {}),
-          ...(options.autoRedact !== undefined ? { auto_redact: options.autoRedact } : {}),
-          ...(options.tabScope ? { tab_scope: options.tabScope } : {}),
+          this.ws.onopen = () => {
+            // Send the task immediately after connection
+            this.send({
+              type: "START_TASK",
+              task,
+              approval_mode: approvalMode,
+              supports_driver: true,
+              ...(options.maxSteps ? { max_steps: options.maxSteps } : {}),
+              ...(options.showOverlay !== undefined ? { show_overlay: options.showOverlay } : {}),
+              ...(options.showCursor !== undefined ? { show_cursor: options.showCursor } : {}),
+              ...(options.autoRedact !== undefined ? { auto_redact: options.autoRedact } : {}),
+              ...(options.tabScope ? { tab_scope: options.tabScope } : {}),
+              ...(options.userId ? { user_id: options.userId } : {}),
+              ...(options.userEmail ? { user_email: options.userEmail } : {}),
+            });
+            succeed();
+          };
+
+          this.ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data) as WsServerMessage;
+              this.dispatch(msg);
+            } catch (err) {
+              console.warn("[agentWS] Failed to parse message:", event.data, err);
+            }
+          };
+
+          this.ws.onerror = () => {
+            fail(
+              `Could not connect to the agent server on ${wsUrl}. ` +
+                "Ensure the server is running."
+            );
+          };
+
+          this.ws.onclose = () => {
+            fail("The agent server closed the connection.");
+            if (!this.closed) {
+              this.handlers.onDisconnect?.();
+            }
+            this.ws = null;
+          };
+        })
+        .catch((err) => {
+          fail(`Could not resolve server URL: ${err instanceof Error ? err.message : String(err)}`);
         });
-        succeed();
-      };
-
-      this.ws.onerror = () => {
-        // A close event follows; the message is deliberately endpoint-agnostic
-        // so it is right whether the receiver is down or refused the socket.
-        fail(
-          "Could not connect to the agent server on ws://127.0.0.1:8002. " +
-            "Start it with: python scripts/start_server.py"
-        );
-      };
-
-      this.ws.onclose = () => {
-        // A close before onopen means the connection never established.
-        fail("The agent server closed the connection before the task started.");
-        if (!this.closed) {
-          this.handlers.onDisconnect?.();
-        }
-        this.ws = null;
-      };
-
-      this.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as WsServerMessage;
-          this.dispatch(msg);
-        } catch (err) {
-          console.warn("[agentWS] Failed to parse message:", event.data, err);
-        }
-      };
     });
   }
 
@@ -504,7 +510,8 @@ export class AgentConnection {
  */
 export async function checkServerHealth(): Promise<HealthStatus> {
   try {
-    const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) });
+    const healthUrl = await getHealthUrl();
+    const res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) {
       return { serverUp: false, vllmReachable: false, cdpReachable: false, error: `HTTP ${res.status}` };
     }

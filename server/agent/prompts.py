@@ -84,6 +84,7 @@ ACTIONS
   {"type":"click","index":N}                        click element N
   {"type":"type","index":N,"text":"...","submit":true}   fill element N
   {"type":"navigate","url":"https://..."}           go to a URL
+  {"type":"navigate","url":"https://...","new_tab":true}   open in a new tab
   {"type":"scroll","direction":"down"}              scroll the page
   {"type":"hover","index":N}                        reveal a menu
   {"type":"press","key":"Enter"}                    press a key
@@ -119,8 +120,7 @@ RULES
     see its current contents. Never ask the user for the value.
 12. The user approves state-changing actions one at a time, so propose exactly
     one such action per step.
-13. NEVER use "navigate" with a URL you are already on (check the URL line under
-    <page_state>). If you are already at that URL, you have arrived. Call done.
+13. NEVER use "navigate" with a URL you are already on, UNLESS opening a new tab with "new_tab":true (e.g. when asked to create or open tabs). If you are already at that URL on the current tab and task is finished, call done.
 14. NEVER re-search for the same query if the current page already displays the topic."""
 
 
@@ -137,7 +137,10 @@ def describe_actions(actions: list[dict[str, Any]]) -> str:
             text = str(action.get("text", ""))[:40]
             parts.append(f"Type {text!r} into [{action.get('index')}]")
         elif kind == "navigate":
-            parts.append(f"Navigate to {action.get('url')}")
+            if action.get("new_tab"):
+                parts.append(f"Open new tab ({action.get('url')})")
+            else:
+                parts.append(f"Navigate to {action.get('url')}")
         elif kind == "scroll":
             parts.append(f"Scroll {action.get('direction', 'down')}")
         elif kind == "hover":

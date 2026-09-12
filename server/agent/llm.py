@@ -15,6 +15,7 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -23,7 +24,10 @@ import httpx
 
 
 class VLLMError(RuntimeError):
-    """Raised when the vLLM backend fails in a way the agent cannot recover from."""
+    """Raised when the vLLM or LLM backend fails in a way the agent cannot recover from."""
+
+
+LLMError = VLLMError
 
 
 class VLLMClient:
@@ -85,6 +89,9 @@ class VLLMClient:
 
     async def resolve_model(self, preferred: str) -> str:
         """Use the preferred model name if served, else the first served model."""
+        if "gemini" in preferred.lower():
+            self.model = preferred
+            return self.model
         models = await self.list_models()
         if models and preferred not in models:
             self.model = models[0]
@@ -109,7 +116,7 @@ class VLLMClient:
             "top_p": self.top_p,
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
         }
-        if self.seed is not None:
+        if self.seed is not None and "googleapis.com" not in self.base_url:
             payload["seed"] = self.seed
         if schema is not None:
             payload["response_format"] = {
@@ -119,16 +126,41 @@ class VLLMClient:
         if extra:
             payload.update(extra)
 
-        started = time.perf_counter()
-        try:
-            resp = await self.client.post("/chat/completions", json=payload)
-        except httpx.HTTPError as exc:
-            raise VLLMError(f"vLLM request failed: {exc}") from exc
+        max_retries = 3
+        backoff = 2.0
+        resp = None
 
-        self.last_latency_ms = (time.perf_counter() - started) * 1000.0
+        for attempt in range(max_retries + 1):
+            started = time.perf_counter()
+            try:
+                resp = await self.client.post("/chat/completions", json=payload)
+                self.last_latency_ms = (time.perf_counter() - started) * 1000.0
+            except httpx.HTTPError as exc:
+                if attempt < max_retries:
+                    await asyncio.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                raise VLLMError(f"LLM request failed: {exc}") from exc
+
+            if resp.status_code == 429:
+                if attempt < max_retries:
+                    retry_after = resp.headers.get("retry-after")
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else backoff
+                    await asyncio.sleep(delay)
+                    backoff *= 2.0
+                    continue
+                raise VLLMError(f"LLM rate limit reached (HTTP 429). Please wait a moment: {resp.text[:300]}")
+            elif resp.status_code == 503 and attempt < max_retries:
+                await asyncio.sleep(backoff)
+                backoff *= 2.0
+                continue
+            break
+
+        if resp is None:
+            raise VLLMError("LLM request did not yield a response")
 
         if resp.status_code >= 400:
-            raise VLLMError(f"vLLM HTTP {resp.status_code}: {resp.text[:400]}")
+            raise VLLMError(f"LLM HTTP {resp.status_code}: {resp.text[:400]}")
 
         data = resp.json()
         self.last_usage = data.get("usage") or {}
@@ -136,7 +168,7 @@ class VLLMClient:
 
         choices = data.get("choices") or []
         if not choices:
-            raise VLLMError("vLLM returned no choices")
+            raise VLLMError("LLM returned no choices")
         message = choices[0].get("message") or {}
         content = message.get("content") or ""
 
@@ -176,3 +208,7 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return None
+
+
+# Semantic alias so callers can treat this as a generic OpenAI/Gemini compatible client
+LLMClient = VLLMClient

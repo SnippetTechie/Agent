@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Boxes, Check, ChevronRight, EllipsisVertical, Languages, Layers, Volume2, VolumeX } from "lucide-react";
+import { Boxes, Check, ChevronRight, EllipsisVertical, Languages, Layers, Server, Volume2, VolumeX, RefreshCw } from "lucide-react";
 import { LANGUAGES } from "../lib/i18n/translations.js";
 import { useI18n } from "../lib/i18n/I18nContext.js";
 import { useMuted } from "../hooks/useMuted.js";
+import { getServerBaseUrl, setServerBaseUrl, resetServerBaseUrl, checkServerHealth } from "../lib/serverConfig.js";
 import type { VisualSettings } from "../hooks/useVisualSettings.js";
 import type { TabScope } from "../types.js";
 
@@ -28,7 +29,17 @@ export function HeaderMenu({
   const [languageOpen, setLanguageOpen] = useState(false);
   const [tabScopeOpen, setTabScopeOpen] = useState(false);
   const [visualsOpen, setVisualsOpen] = useState(false);
+  const [serverOpen, setServerOpen] = useState(false);
+  const [serverInput, setServerInput] = useState("");
+  const [serverStatus, setServerStatus] = useState<string | null>(null);
+  const [checkingServer, setCheckingServer] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (serverOpen) {
+      getServerBaseUrl().then((url) => setServerInput(url));
+    }
+  }, [serverOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -208,6 +219,91 @@ export function HeaderMenu({
                     )}
                   </button>
                 ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Server Endpoint: Remote GPU host vs localhost */}
+          <button
+            type="button"
+            onClick={() => {
+              setServerOpen((v) => !v);
+              setLanguageOpen(false);
+              setTabScopeOpen(false);
+              setVisualsOpen(false);
+            }}
+            className={itemClass}
+          >
+            <Server className="h-3.5 w-3.5 text-cyan-400" />
+            <span className="flex-1">Server Endpoint</span>
+            <ChevronRight
+              className={`h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${serverOpen ? "rotate-90" : ""}`}
+            />
+          </button>
+
+          <div
+            className="grid transition-[grid-template-rows] duration-200 ease-out"
+            style={{ gridTemplateRows: serverOpen ? "1fr" : "0fr" }}
+          >
+            <div className="overflow-hidden">
+              <div className="border-t border-varma-border p-2.5 space-y-2 text-[11px]">
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1">Receiver Host / Port</label>
+                  <input
+                    type="text"
+                    value={serverInput}
+                    onChange={(e) => setServerInput(e.target.value)}
+                    placeholder="http://127.0.0.1:8002"
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    disabled={checkingServer}
+                    onClick={async () => {
+                      setCheckingServer(true);
+                      setServerStatus("Testing...");
+                      const res = await checkServerHealth(serverInput);
+                      setCheckingServer(false);
+                      setServerStatus(res.ok ? `✓ ${res.model || "Connected"}` : `✗ ${res.statusText || "Failed"}`);
+                    }}
+                    className="flex-1 rounded bg-slate-800 py-1 text-center font-medium text-slate-300 hover:bg-slate-700 cursor-pointer"
+                  >
+                    Test
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await setServerBaseUrl(serverInput);
+                      setServerStatus("✓ Saved");
+                      setTimeout(() => setServerStatus(null), 2000);
+                    }}
+                    className="flex-1 rounded bg-cyan-600 py-1 text-center font-medium text-white hover:bg-cyan-500 cursor-pointer"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const def = await resetServerBaseUrl();
+                      setServerInput(def);
+                      setServerStatus("Reset to default");
+                      setTimeout(() => setServerStatus(null), 2000);
+                    }}
+                    className="rounded bg-slate-800 px-2 py-1 text-slate-400 hover:text-white cursor-pointer"
+                    title="Reset to default"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                  </button>
+                </div>
+
+                {serverStatus && (
+                  <p className={`text-[10px] ${serverStatus.startsWith("✓") ? "text-emerald-400" : "text-amber-400"}`}>
+                    {serverStatus}
+                  </p>
+                )}
               </div>
             </div>
           </div>

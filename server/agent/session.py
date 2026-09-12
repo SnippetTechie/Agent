@@ -758,7 +758,7 @@ class BrowserSessionManager:
         # even though navigation is not a pointer action.
         await self._move_cursor(24, 24)
         try:
-            if new_tab and self.tab_scope != "single":
+            if new_tab:
                 page = await page.context.new_page()
                 self._page = page
                 await page.goto(url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms)

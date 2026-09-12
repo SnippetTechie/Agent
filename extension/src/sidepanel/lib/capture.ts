@@ -10,8 +10,7 @@
  * avoids sending pixels anywhere.
  */
 
-const RECEIVER_BASE = "http://127.0.0.1:8002";
-const CHAT_URL = `${RECEIVER_BASE}/chat`;
+import { getChatUrl, getServerBaseUrl } from "./serverConfig.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -33,7 +32,8 @@ export async function sendChatMessage(
   signal?: AbortSignal
 ): Promise<ChatResponse> {
   try {
-    const res = await fetch(CHAT_URL, {
+    const chatUrl = await getChatUrl();
+    const res = await fetch(chatUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, messages: history }),
@@ -97,7 +97,8 @@ export interface RedactedCaptureResult {
  * 5. Immediately restores live DOM to original state.
  */
 export async function captureRedactedScreenshot(
-  prompt?: string
+  prompt?: string,
+  userId?: string
 ): Promise<RedactedCaptureResult> {
   if (typeof chrome === "undefined" || !chrome.tabs?.captureVisibleTab) {
     return {
@@ -159,7 +160,8 @@ export async function captureRedactedScreenshot(
   let targets: RedactionTarget[] = [];
   let detectedSpans: any[] = [];
   try {
-    const detectRes = await fetch(`${RECEIVER_BASE}/redact/detect`, {
+    const serverBase = await getServerBaseUrl();
+    const detectRes = await fetch(`${serverBase}/redact/detect`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: pageText }),
@@ -212,13 +214,16 @@ export async function captureRedactedScreenshot(
         }
         const blob = new Blob([ab], { type: "image/png" });
 
-        fetch(`${RECEIVER_BASE}/screenshot?name=redacted`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "X-Prompt": encodeURIComponent(prompt),
-          },
-          body: blob,
+        getServerBaseUrl().then((serverBase) => {
+          fetch(`${serverBase}/screenshot?name=redacted`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-Prompt": encodeURIComponent(prompt),
+              ...(userId ? { "X-User-Id": encodeURIComponent(userId) } : {}),
+            },
+            body: blob,
+          }).catch(() => {});
         }).catch(() => {});
       } catch {}
     }
