@@ -3,6 +3,7 @@ node_modules/
 !extension/dist/**
 .vite/
 *.log
+*.zip
 /screenshots/
 /reference
 

@@ -1,0 +1,58 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package extension zip
+        run: |
+          cd extension/dist
+          TAG="${{ github.ref_name }}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG="v0.1.0"
+          fi
+          zip -r "../../varma-extension-${TAG}.zip" .
+          cd ../..
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
+          name: V.A.R.M.A Extension ${{ github.ref_name || github.event.inputs.tag_name }}
+          files: varma-extension-*.zip
+          body: |
+            ## V.A.R.M.A — Visual Agent for Reasoning and Multimodal Actions
+            
+            Autonomous, privacy-first multimodal web browser agent powered by Gemma 4 12B and native Chrome DevTools Protocol (CDP).
+            
+            ### Quick Installation Guide
+            1. Download `varma-extension-*.zip` below.
+            2. Extract / unzip the archive into a folder on your computer.
+            3. Open Google Chrome and navigate to `chrome://extensions/`.
+            4. Enable **Developer mode** in the top-right corner.
+            5. Click **Load unpacked** and select the unzipped directory.
+            6. Open the V.A.R.M.A sidepanel and start automating!
+            
+            ### Cloud Backend
+            - Default Server Endpoint: `https://varma.jrushvj.dev`
+            - Powered 24/7 by Gemma 4 12B with real-time vision grounding and privacy masking.
