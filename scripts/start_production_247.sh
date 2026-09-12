@@ -102,7 +102,13 @@ start_vllm() {
 
 start_receiver() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting V.A.R.M.A receiver on port ${RECEIVER_PORT}..."
-    python3 scripts/start_server.py >> "${LOGS_DIR}/receiver.log" 2>&1 &
+    PYTHON_BIN="python3"
+    if [ -f "${ROOT_DIR}/.venv/bin/python" ]; then
+        PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+    elif [ -f "${HOME}/pe-x1/vllm-env/bin/python" ]; then
+        PYTHON_BIN="${HOME}/pe-x1/vllm-env/bin/python"
+    fi
+    $PYTHON_BIN scripts/start_server.py >> "${LOGS_DIR}/receiver.log" 2>&1 &
     PID_RECEIVER=$!
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Receiver started with PID ${PID_RECEIVER}"
 }
