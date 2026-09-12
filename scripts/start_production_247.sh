@@ -1,16 +1,12 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # =============================================================================
 # V.A.R.M.A — 24/7 Production All-in-One Server Runner
 #
-# Runs both:
-#   1. vLLM with gemma-4-12b-it on Port 8000
+# Runs:
+#   1. Gemma Model via ~/pe-x1/launch_gemma4.sh (or vLLM fallback) on Port 8000
 #   2. V.A.R.M.A Receiver on Port 8002 (bound to 0.0.0.0 for external clients)
 #
-# Features:
-#   - 24/7 process supervision: auto-restarts either service if it dies
-#   - Auto-detects local model paths or downloads from HuggingFace
-#   - Writes rotating, timestamped logs to logs/vllm.log and logs/receiver.log
-#   - Graceful shutdown handler for systemd and SIGINT/SIGTERM
+# 24/7 Supervision: monitors both processes and auto-restarts if either crashes.
 # =============================================================================
 
 set -uo pipefail
@@ -36,44 +32,25 @@ export GROUNDING_MODEL="${VLLM_MODEL}"
 export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
 export MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 
-# Recommended CUDA & vLLM optimizations for Gemma / Ampere
-export VLLM_USE_V1="${VLLM_USE_V1:-0}"
-export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
-export CCCL_IGNORE_DEPRECATED_CUDA_BELOW_12=1
-
-# --- Locate Model Path ---
-MODEL_PATH="${MODEL_PATH:-}"
-CANDIDATE_PATHS=(
-    "${MODEL_PATH}"
-    "${HOME}/pe-x1/models/gemma-4-12b-it"
-    "${HOME}/models/gemma-4-12b-it"
-    "${ROOT_DIR}/models/gemma-4-12b-it"
-    "/models/gemma-4-12b-it"
-    "google/gemma-4-12b-it"
-)
-
-RESOLVED_MODEL=""
-for p in "${CANDIDATE_PATHS[@]}"; do
-    if [ -n "$p" ] && [ -d "$p" ]; then
-        RESOLVED_MODEL="$p"
-        break
-    fi
-done
-
-if [ -z "$RESOLVED_MODEL" ]; then
-    RESOLVED_MODEL="${MODEL_PATH:-google/gemma-4-12b-it}"
-fi
+# Check for custom Gemma launcher script in ~/pe-x1
+GEMMA_LAUNCHER="${GEMMA_LAUNCHER:-${HOME}/pe-x1/launch_gemma4.sh}"
 
 echo "================================================================="
 echo "  V.A.R.M.A 24/7 Production Runner"
 echo "================================================================="
-echo "  Model               : ${RESOLVED_MODEL}"
+if [ -f "$GEMMA_LAUNCHER" ]; then
+    echo "  Gemma Launcher      : ${GEMMA_LAUNCHER} (Custom script detected)"
+else
+    echo "  Gemma Launcher      : vllm serve google/gemma-4-12b-it"
+fi
 echo "  vLLM Engine Port    : ${VLLM_PORT}"
 echo "  Receiver API Port   : ${RECEIVER_PORT} (Host: ${RECEIVER_HOST})"
 echo "  Logs Directory      : ${LOGS_DIR}"
 echo "================================================================="
 
-# --- Cleanup Trap ---
+PID_VLLM=""
+PID_RECEIVER=""
+
 cleanup() {
     echo ""
     echo "[!] Caught shutdown signal! Stopping child processes..."
@@ -89,18 +66,34 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+is_vllm_healthy() {
+    curl -s "http://127.0.0.1:${VLLM_PORT}/health" >/dev/null 2>&1 || \
+    curl -s "http://127.0.0.1:${VLLM_PORT}/v1/models" >/dev/null 2>&1
+}
+
 start_vllm() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting vLLM server on port ${VLLM_PORT}..."
-    vllm serve "${RESOLVED_MODEL}" \
-        --port "${VLLM_PORT}" \
-        --host "${VLLM_HOST}" \
-        --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-        --max-model-len "${MAX_MODEL_LEN}" \
-        --trust-remote-code \
-        --dtype bfloat16 \
-        >> "${LOGS_DIR}/vllm.log" 2>&1 &
-    PID_VLLM=$!
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] vLLM started with PID ${PID_VLLM}"
+    if is_vllm_healthy; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] vLLM is ALREADY running on port ${VLLM_PORT}! Reusing existing instance."
+        return 0
+    fi
+
+    if [ -f "$GEMMA_LAUNCHER" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Gemma via ${GEMMA_LAUNCHER}..."
+        (cd "${HOME}/pe-x1" && bash "$GEMMA_LAUNCHER") >> "${LOGS_DIR}/vllm.log" 2>&1 &
+        PID_VLLM=$!
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting vLLM server on port ${VLLM_PORT}..."
+        vllm serve google/gemma-4-12b-it \
+            --port "${VLLM_PORT}" \
+            --host "${VLLM_HOST}" \
+            --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${MAX_MODEL_LEN}" \
+            --trust-remote-code \
+            --dtype bfloat16 \
+            >> "${LOGS_DIR}/vllm.log" 2>&1 &
+        PID_VLLM=$!
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Model process started with PID ${PID_VLLM}"
 }
 
 start_receiver() {
@@ -110,24 +103,23 @@ start_receiver() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Receiver started with PID ${PID_RECEIVER}"
 }
 
-# --- 1. Start vLLM ---
+# --- 1. Start vLLM Model ---
 start_vllm
 
-echo "[*] Waiting for vLLM to warm up and load weights into GPU VRAM..."
+echo "[*] Waiting for Gemma model to be ready on port ${VLLM_PORT}..."
 RETRIES=150
 COUNT=0
 VLLM_READY=0
 while [ $COUNT -lt $RETRIES ]; do
-    if curl -s "http://127.0.0.1:${VLLM_PORT}/health" >/dev/null 2>&1 || curl -s "http://127.0.0.1:${VLLM_PORT}/v1/models" >/dev/null 2>&1; then
+    if is_vllm_healthy; then
         VLLM_READY=1
         echo ""
-        echo "[✓] vLLM is healthy and serving ${RESOLVED_MODEL} on port ${VLLM_PORT}!"
+        echo "[✓] Gemma model is LIVE and responding on port ${VLLM_PORT}!"
         break
     fi
-    # Check if process died early
-    if ! kill -0 "$PID_VLLM" 2>/dev/null; then
+    if [ -n "$PID_VLLM" ] && ! kill -0 "$PID_VLLM" 2>/dev/null; then
         echo ""
-        echo "[ERROR] vLLM process died unexpectedly during startup! Check logs/vllm.log:"
+        echo "[ERROR] Model process exited! Check logs/vllm.log:"
         tail -n 25 "${LOGS_DIR}/vllm.log"
         exit 1
     fi
@@ -138,11 +130,11 @@ done
 
 if [ $VLLM_READY -eq 0 ]; then
     echo ""
-    echo "[ERROR] Timed out waiting for vLLM to become healthy."
+    echo "[ERROR] Timed out waiting for Gemma on port ${VLLM_PORT}."
     exit 1
 fi
 
-# --- 2. Start Receiver ---
+# --- 2. Start Receiver Server ---
 start_receiver
 
 echo "[*] Verifying receiver health on port ${RECEIVER_PORT}..."
@@ -150,10 +142,9 @@ sleep 3
 if curl -s "http://127.0.0.1:${RECEIVER_PORT}/health" >/dev/null 2>&1; then
     echo "[✓] Receiver is healthy and reachable on http://${RECEIVER_HOST}:${RECEIVER_PORT}!"
 else
-    echo "[!] Receiver is starting up, continuing to monitor..."
+    echo "[*] Receiver starting up..."
 fi
 
-# Discover public/local IP for display
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "your-server-ip")
 
 echo ""
@@ -173,13 +164,12 @@ echo ""
 
 # --- 3. 24/7 Supervisor Loop ---
 while true; do
-    if ! kill -0 "$PID_VLLM" 2>/dev/null; then
-        echo "[ALERT $(date '+%Y-%m-%d %H:%M:%S')] vLLM exited! Auto-restarting in 3 seconds..."
-        sleep 3
+    if ! is_vllm_healthy; then
+        echo "[ALERT $(date '+%Y-%m-%d %H:%M:%S')] Model on port ${VLLM_PORT} unreachable! Restarting..."
         start_vllm
     fi
 
-    if ! kill -0 "$PID_RECEIVER" 2>/dev/null; then
+    if [ -n "$PID_RECEIVER" ] && ! kill -0 "$PID_RECEIVER" 2>/dev/null; then
         echo "[ALERT $(date '+%Y-%m-%d %H:%M:%S')] Receiver exited! Auto-restarting in 2 seconds..."
         sleep 2
         start_receiver

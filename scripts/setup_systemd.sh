@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # =============================================================================
 # V.A.R.M.A — Systemd 24/7 Service Installer (Linux / Ubuntu)
 #

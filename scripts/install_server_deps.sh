@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # =============================================================================
 # V.A.R.M.A — 1-Click Server Dependencies Installer
 #
