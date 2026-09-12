@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Shield,
   Sparkles,
   Database,
   Lock,
@@ -12,6 +11,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import logo from "../../assets/varma-logo.png";
 
 interface WelcomeScreenProps {
   onSignIn: (customEmail?: string, customName?: string) => Promise<any>;
@@ -78,11 +78,8 @@ export function WelcomeScreen({
     <div className="flex h-screen flex-col justify-between overflow-y-auto bg-[#071318] p-5 text-slate-100 select-none">
       {/* Top Header */}
       <div className="flex flex-col items-center text-center mt-2">
-        <div className="relative mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-cyan-950/80 border border-cyan-500/40 shadow-[0_0_25px_rgba(34,211,238,0.25)]">
-          <Shield className="h-7 w-7 text-cyan-400" />
-          <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-cyan-400">
-            <span className="h-2 w-2 rounded-full bg-cyan-950 animate-ping" />
-          </span>
+        <div className="relative mb-3 flex h-14 w-14 items-center justify-center">
+          <img src={logo} alt="V.A.R.M.A" className="h-12 w-12 object-contain" />
         </div>
 
         <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
