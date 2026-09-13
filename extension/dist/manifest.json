@@ -20,7 +20,8 @@
     "tabs",
     "storage",
     "tabGroups",
-    "identity"
+    "identity",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>",

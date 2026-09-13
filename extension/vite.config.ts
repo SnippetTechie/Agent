@@ -70,6 +70,11 @@ export default defineConfig({
         // imported from any bundled entry, so it needs to be listed
         // explicitly to be built at all.
         "mic-permission": path.resolve(__dirname, "src/sidepanel/mic-permission.html"),
+        // dictation.html is the hidden offscreen document background/index.ts
+        // spins up to actually run SpeechRecognition (see src/offscreen/dictation.ts
+        // for why: side panels can start it but never receive results). Also not
+        // referenced by the manifest, so it needs the same explicit entry.
+        dictation: path.resolve(__dirname, "src/offscreen/dictation.html"),
       },
     },
   },

@@ -1,35 +1,16 @@
 import type { LanguageCode } from "./i18n/translations.js";
 
 /**
- * Minimal local surface for the Web Speech API — deliberately not relying
- * on ambient DOM lib types for SpeechRecognition, since they're gated
- * behind an unstable spec and not consistently present across TS/lib.dom
- * versions. window.SpeechRecognition / webkitSpeechRecognition are read
- * via a narrow cast instead.
+ * Deliberately not relying on ambient DOM lib types for SpeechRecognition,
+ * since they're gated behind an unstable spec and not consistently present
+ * across TS/lib.dom versions. window.SpeechRecognition /
+ * webkitSpeechRecognition are read via a narrow cast instead.
  */
-interface MinimalSpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start(): void;
-  stop(): void;
-  onresult: ((event: { resultIndex: number; results: SpeechRecognitionResultLike[] }) => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-}
-
-interface SpeechRecognitionResultLike {
-  0: { transcript: string };
-  isFinal: boolean;
-}
-
-type SpeechRecognitionCtor = new () => MinimalSpeechRecognition;
-
-function getCtor(): SpeechRecognitionCtor | null {
+function getCtor(): (new () => unknown) | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as {
-    SpeechRecognition?: SpeechRecognitionCtor;
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
+    SpeechRecognition?: new () => unknown;
+    webkitSpeechRecognition?: new () => unknown;
   };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
@@ -69,40 +50,48 @@ export function openMicPermissionTab(): void {
   void chrome.tabs.create({ url: chrome.runtime.getURL("src/sidepanel/mic-permission.html") });
 }
 
+/**
+ * Runs recognition in a hidden offscreen document instead of inline here —
+ * SpeechRecognition started directly from the side panel never errors, but
+ * never returns a result either. Chrome's Web Speech API doesn't reliably
+ * attach to a side panel's WebContents the way it does a real tab or an
+ * offscreen document (crbug.com/1077446). background/index.ts owns that
+ * document's lifecycle; src/offscreen/dictation.ts owns the actual
+ * SpeechRecognition instance. This just relays start/stop over
+ * chrome.runtime messaging and listens for the broadcast results.
+ */
 export function startSpeechRecognition(opts: {
   lang: LanguageCode;
   onTranscript: (transcript: string) => void;
   onEnd: () => void;
   onError: (message: string) => void;
 }): SpeechController | null {
-  const Ctor = getCtor();
-  if (!Ctor) return null;
+  if (getCtor() === null) return null;
 
-  const recognition = new Ctor();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = SPEECH_LOCALE[opts.lang];
-
-  recognition.onresult = (event) => {
-    // Rebuild from the full result list each event (not just the
-    // resultIndex tail) — in continuous mode, results accumulate for the
-    // whole session, and this is the simplest correct way to always hand
-    // back the complete transcript-so-far.
-    let transcript = "";
-    for (let i = 0; i < event.results.length; i++) {
-      transcript += event.results[i]?.[0]?.transcript ?? "";
+  const listener = (message: { type?: string; transcript?: string; error?: string }) => {
+    if (message?.type === "DICTATION_TRANSCRIPT") {
+      opts.onTranscript(message.transcript ?? "");
+    } else if (message?.type === "DICTATION_ERROR") {
+      chrome.runtime.onMessage.removeListener(listener);
+      opts.onError(message.error ?? "unknown");
+    } else if (message?.type === "DICTATION_END") {
+      chrome.runtime.onMessage.removeListener(listener);
+      opts.onEnd();
     }
-    opts.onTranscript(transcript);
   };
-  recognition.onerror = (event) => opts.onError(event.error);
-  recognition.onend = () => opts.onEnd();
+  chrome.runtime.onMessage.addListener(listener);
 
-  try {
-    recognition.start();
-  } catch (err) {
-    opts.onError(String(err));
-    return null;
-  }
+  void chrome.runtime.sendMessage({ type: "DICTATION_START", lang: SPEECH_LOCALE[opts.lang] });
 
-  return { stop: () => recognition.stop() };
+  return {
+    // Deliberately doesn't remove `listener` here: the eventual
+    // DICTATION_END broadcast (once the offscreen document's recognition
+    // actually stops) is what tells InputDock to flip `listening` back to
+    // false, and that message's own handler above removes the listener.
+    // Removing it immediately here would leave the mic UI stuck "listening"
+    // forever on every manual stop.
+    stop: () => {
+      void chrome.runtime.sendMessage({ type: "DICTATION_STOP" });
+    },
+  };
 }

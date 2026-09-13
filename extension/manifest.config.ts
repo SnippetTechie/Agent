@@ -40,6 +40,7 @@ export default defineManifest({
     "storage",
     "tabGroups",
     "identity",
+    "offscreen",
   ],
   host_permissions: [
     "<all_urls>",
