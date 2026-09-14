@@ -107,9 +107,10 @@ bash scripts/install_server_deps.sh
 *(This installs FastAPI, Uvicorn, vLLM, Flash-Attention, Playwright, and sets up `server/.env`).*
 
 ### Step 3: Configure Environment
-Copy and verify your server configuration:
+Create and verify your server configuration (`server/.env`):
 ```bash
-cp server/.env.example server/.env
+# Edit server/.env
+nano server/.env
 ```
 Key settings in `server/.env`:
 ```ini
@@ -259,7 +260,6 @@ Agent/
 ├── server/                          # Python Backend
 │   ├── receiver.py                  # FastAPI server: /health, /chat, /ws/agent
 │   ├── requirements.txt             # Backend dependencies
-│   ├── .env.example                 # Environment template
 │   ├── agent/
 │   │   ├── loop.py                  # Main observe -> think -> act agent loop
 │   │   ├── extension_session.py     # Tab driver bridge over WebSocket

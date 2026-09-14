@@ -23,8 +23,8 @@ else
     echo "[!] Warning: nvidia-smi not found. Ensure NVIDIA CUDA drivers are installed."
 fi
 
-# Initialize server/.env from example if not already present
-if [ ! -f "${ROOT_DIR}/server/.env" ]; then
+# Initialize server/.env from template if present
+if [ ! -f "${ROOT_DIR}/server/.env" ] && [ -f "${ROOT_DIR}/server/.env.example" ]; then
     echo "[*] Creating server/.env from template..."
     cp "${ROOT_DIR}/server/.env.example" "${ROOT_DIR}/server/.env"
 fi
